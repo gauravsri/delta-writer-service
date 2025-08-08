@@ -24,4 +24,14 @@ public class DataController {
 
         return ResponseEntity.status(HttpStatus.CREATED).build();
     }
+
+    @GetMapping("/{tableName}/{primaryKey}")
+    public ResponseEntity<Map<String, Object>> readData(
+            @PathVariable String tableName,
+            @PathVariable String primaryKey) {
+
+        return dataService.readData(tableName, primaryKey)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
 }

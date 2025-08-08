@@ -2,6 +2,9 @@ package com.example.deltastore.service;
 
 import java.util.Map;
 
+import java.util.Map;
+import java.util.Optional;
+
 public interface DataService {
 
     /**
@@ -12,4 +15,12 @@ public interface DataService {
      */
     void saveData(String tableName, Map<String, Object> data);
 
+    /**
+     * Reads a single record from the specified table by its primary key.
+     *
+     * @param tableName The name of the target table.
+     * @param primaryKey The primary key of the record to read.
+     * @return An Optional containing the record as a Map, or an empty Optional if not found.
+     */
+    Optional<Map<String, Object>> readData(String tableName, String primaryKey);
 }

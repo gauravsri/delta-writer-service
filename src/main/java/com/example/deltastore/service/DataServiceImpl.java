@@ -66,4 +66,19 @@ public class DataServiceImpl implements DataService {
         // TODO: Add validation to ensure all required fields are present
         return record;
     }
+
+    @Override
+    public Optional<Map<String, Object>> readData(String tableName, String primaryKeyValue) {
+        log.info("Reading data for table '{}' with key '{}'", tableName, primaryKeyValue);
+
+        TableSchema tableSchema = schemaRegistry.getTableSchema(tableName)
+                .orElseThrow(() -> new IllegalArgumentException("No schema configured for table: " + tableName));
+
+        String primaryKeyColumn = tableSchema.getPrimaryKey();
+        if (primaryKeyColumn == null || primaryKeyColumn.isBlank()) {
+            throw new IllegalStateException("No primary key configured for table: " + tableName);
+        }
+
+        return deltaTableManager.read(tableName, primaryKeyColumn, primaryKeyValue);
+    }
 }

@@ -35,7 +35,9 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 
@@ -89,7 +91,34 @@ class DataControllerIntegrationTest {
                         .content(userJson))
                 .andExpect(status().isCreated());
 
-        var objects = s3Client.listObjectsV2(ListObjectsV2Request.builder().bucket(bucketName).build());
+        var objects = s3Client.listObjectsV2(ListObjectsV2Request.builder().bucket(bucketName).prefix("users/").build());
         assertThat(objects.contents()).anyMatch(s3Object -> s3Object.key().endsWith(".parquet"));
+    }
+
+    @Test
+    void givenRecordExists_whenGetByPrimaryKey_thenReturnsRecord() throws Exception {
+        // Step 1: Create a record to ensure it exists
+        String userId = "u456";
+        String userJson = String.format("""
+                {
+                    "user_id": "%s",
+                    "username": "get_test_user",
+                    "email": "get@example.com",
+                    "country": "CA",
+                    "signup_date": "2024-02-20"
+                }
+                """, userId);
+
+        mockMvc.perform(post("/api/v1/data/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(userJson))
+                .andExpect(status().isCreated());
+
+        // Step 2: Attempt to GET the record by its primary key
+        mockMvc.perform(get("/api/v1/data/users/" + userId)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.username").value("get_test_user"))
+                .andExpect(jsonPath("$.user_id").value(userId));
     }
 }
