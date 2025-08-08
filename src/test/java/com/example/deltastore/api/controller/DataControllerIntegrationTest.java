@@ -34,11 +34,14 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 
+import org.junit.jupiter.api.Disabled;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
+import static org.hamcrest.Matchers.hasSize;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
-import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -125,20 +128,38 @@ class DataControllerIntegrationTest {
     }
 
     @Test
-    void whenUpdateData_thenReturnsNotImplemented() throws Exception {
-        String userJson = """
-                { "username": "updated_user" }
-                """;
+    void givenRecordsInPartition_whenGetByPartition_thenReturnsOnlyPartitionedData() throws Exception {
+        // Step 1: Create multiple records in different partitions
+        postUser("u_us_1", "user_us_1", "US", "2024-01-15");
+        postUser("u_us_2", "user_us_2", "US", "2024-01-20");
+        postUser("u_ca_1", "user_ca_1", "CA", "2024-01-15");
 
-        mockMvc.perform(put("/api/v1/data/users/any-id")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(userJson))
-                .andExpect(status().isNotImplemented());
+        // Step 2: GET the data with a partition filter
+        MultiValueMap<String, String> params = new LinkedMultiValueMap<>();
+        params.add("country", "US");
+        params.add("signup_date", "2024-01-15");
+
+        mockMvc.perform(get("/api/v1/data/users")
+                        .params(params)
+                        .accept(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].user_id").value("u_us_1"));
     }
 
-    @Test
-    void whenDeleteData_thenReturnsNotImplemented() throws Exception {
-        mockMvc.perform(delete("/api/v1/data/users/any-id"))
-                .andExpect(status().isNotImplemented());
+    private void postUser(String userId, String username, String country, String signupDate) throws Exception {
+        String userJson = String.format("""
+                {
+                    "user_id": "%s",
+                    "username": "%s",
+                    "country": "%s",
+                    "signup_date": "%s"
+                }
+                """, userId, username, country, signupDate);
+
+        mockMvc.perform(post("/api/v1/data/users")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(userJson))
+                .andExpect(status().isCreated());
     }
 }

@@ -31,4 +31,13 @@ public interface DeltaTableManager {
      * @return An Optional containing the found record as a Map, or empty if not found.
      */
     Optional<Map<String, Object>> read(String tableName, String primaryKeyColumn, String primaryKeyValue);
+
+    /**
+     * Reads all records from a table that match the given partition filters.
+     *
+     * @param tableName The name of the table.
+     * @param partitionFilters A map of partition column names to their desired values.
+     * @return A list of records that match the partition filters.
+     */
+    List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters);
 }

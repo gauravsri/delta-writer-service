@@ -23,15 +23,24 @@ import org.springframework.stereotype.Service;
 import org.apache.parquet.avro.AvroParquetWriter;
 import org.apache.parquet.hadoop.ParquetWriter;
 import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import io.delta.kernel.ScanBuilder;
 import io.delta.kernel.Transaction;
 import io.delta.kernel.actions.Action;
+import io.delta.kernel.expressions.And;
+import io.delta.kernel.expressions.Column;
+import io.delta.kernel.expressions.EqualTo;
+import io.delta.kernel.expressions.Expression;
+import io.delta.kernel.expressions.Literal;
+import io.delta.kernel.types.StringType;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.stream.Collectors;
 
 
 @Service
@@ -156,5 +165,37 @@ public class DeltaTableManagerImpl implements DeltaTableManager {
             }
         }
         return map;
+    }
+
+    @Override
+    public List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters) {
+        String tablePath = "s3a://" + bucketName + "/" + tableName;
+        DeltaLog log = DeltaLog.forTable(engine, tablePath);
+        Snapshot snapshot = log.snapshot();
+        StructType schema = snapshot.getSchema();
+
+        ScanBuilder scanBuilder = snapshot.getScanBuilder();
+
+        if (partitionFilters != null && !partitionFilters.isEmpty()) {
+            Expression predicate = partitionFilters.entrySet().stream()
+                    .map(entry -> (Expression) new EqualTo(
+                            new Column(entry.getKey()),
+                            Literal.ofString(entry.getValue())
+                    ))
+                    .reduce(And::new)
+                    .orElseThrow(); // Should not happen if map is not empty
+            scanBuilder.withFilter(predicate);
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        try (CloseableIterator<Row> scan = scanBuilder.build().getRows()) {
+            while(scan.hasNext()) {
+                results.add(rowToMap(scan.next(), schema));
+            }
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read from Delta table by partition", e);
+        }
+
+        return results;
     }
 }

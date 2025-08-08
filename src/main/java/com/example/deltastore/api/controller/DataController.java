@@ -35,20 +35,11 @@ public class DataController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    @PutMapping("/{tableName}/{primaryKey}")
-    public ResponseEntity<Void> updateData(
+    @GetMapping("/{tableName}")
+    public ResponseEntity<List<Map<String, Object>>> readTable(
             @PathVariable String tableName,
-            @PathVariable String primaryKey,
-            @RequestBody Map<String, Object> data) {
+            @RequestParam Map<String, String> partitionFilters) {
 
-        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
-    }
-
-    @DeleteMapping("/{tableName}/{primaryKey}")
-    public ResponseEntity<Void> deleteData(
-            @PathVariable String tableName,
-            @PathVariable String primaryKey) {
-
-        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
+        return ResponseEntity.ok(dataService.readByPartitions(tableName, partitionFilters));
     }
 }

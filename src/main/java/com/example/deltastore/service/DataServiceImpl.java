@@ -81,4 +81,10 @@ public class DataServiceImpl implements DataService {
 
         return deltaTableManager.read(tableName, primaryKeyColumn, primaryKeyValue);
     }
+
+    @Override
+    public List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters) {
+        log.info("Reading data for table '{}' with partition filters {}", tableName, partitionFilters);
+        return deltaTableManager.readByPartitions(tableName, partitionFilters);
+    }
 }
