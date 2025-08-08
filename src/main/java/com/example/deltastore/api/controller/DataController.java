@@ -34,4 +34,21 @@ public class DataController {
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
+
+    @PutMapping("/{tableName}/{primaryKey}")
+    public ResponseEntity<Void> updateData(
+            @PathVariable String tableName,
+            @PathVariable String primaryKey,
+            @RequestBody Map<String, Object> data) {
+
+        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
+    }
+
+    @DeleteMapping("/{tableName}/{primaryKey}")
+    public ResponseEntity<Void> deleteData(
+            @PathVariable String tableName,
+            @PathVariable String primaryKey) {
+
+        return ResponseEntity.status(HttpStatus.NOT_IMPLEMENTED).build();
+    }
 }

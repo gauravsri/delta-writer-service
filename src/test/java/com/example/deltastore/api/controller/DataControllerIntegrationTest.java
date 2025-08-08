@@ -35,8 +35,10 @@ import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
 import software.amazon.awssdk.services.s3.model.ListObjectsV2Request;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -120,5 +122,23 @@ class DataControllerIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.username").value("get_test_user"))
                 .andExpect(jsonPath("$.user_id").value(userId));
+    }
+
+    @Test
+    void whenUpdateData_thenReturnsNotImplemented() throws Exception {
+        String userJson = """
+                { "username": "updated_user" }
+                """;
+
+        mockMvc.perform(put("/api/v1/data/users/any-id")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(userJson))
+                .andExpect(status().isNotImplemented());
+    }
+
+    @Test
+    void whenDeleteData_thenReturnsNotImplemented() throws Exception {
+        mockMvc.perform(delete("/api/v1/data/users/any-id"))
+                .andExpect(status().isNotImplemented());
     }
 }
