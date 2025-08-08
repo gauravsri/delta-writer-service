@@ -1,0 +1,21 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: deltastore
+
+app:
+  schema-registry:
+    tables:
+      - name: "users"
+        schema-path: "classpath:schemas/users.avsc"
+        primary-key: "user_id"
+        partition-by: ["country", "signup_date"]
+      - name: "products"
+        schema-path: "classpath:schemas/products.avsc"
+        primary-key: "product_id"
+        partition-by: ["category"]
+  optimization:
+    cron: "0 0 2 * * ?" # Run at 2 AM daily
+    vacuum-retention-hours: 168 # 7 days

@@ -1,0 +1,12 @@
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+app:
+  storage:
+    type: s3
+    bucket-name: "my-prod-delta-bucket"
+    # No endpoint, access-key, or secret-key needed here.
+    # The SDK will use the default credential provider chain (e.g., IAM role, env vars).
+    # Region can be set via environment variable or instance metadata.
