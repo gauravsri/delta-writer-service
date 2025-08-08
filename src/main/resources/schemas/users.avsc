@@ -1,0 +1,12 @@
+{
+  "type": "record",
+  "name": "User",
+  "namespace": "com.example.deltastore.schemas",
+  "fields": [
+    {"name": "user_id", "type": "string"},
+    {"name": "username", "type": "string"},
+    {"name": "email", "type": ["null", "string"], "default": null},
+    {"name": "country", "type": "string"},
+    {"name": "signup_date", "type": "string"}
+  ]
+}

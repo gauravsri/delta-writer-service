@@ -1,0 +1,12 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+
+app:
+  storage:
+    type: minio
+    bucket-name: "delta-local"
+    endpoint: "http://localhost:9000"
+    access-key: "minioadmin"
+    secret-key: "minioadmin"
