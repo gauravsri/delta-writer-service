@@ -22,4 +22,22 @@ public interface DeltaTableManager {
      */
     void write(String tableName, List<GenericRecord> records, Schema schema);
 
+    /**
+     * Reads a single record from the Delta table by its primary key.
+     *
+     * @param tableName The name of the table.
+     * @param primaryKeyColumn The name of the primary key column.
+     * @param primaryKeyValue The value of the primary key to find.
+     * @return An Optional containing the found record as a Map, or empty if not found.
+     */
+    Optional<Map<String, Object>> read(String tableName, String primaryKeyColumn, String primaryKeyValue);
+
+    /**
+     * Reads all records from a table that match the given partition filters.
+     *
+     * @param tableName The name of the table.
+     * @param partitionFilters A map of partition column names to their desired values.
+     * @return A list of records that match the partition filters.
+     */
+    List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters);
 }
