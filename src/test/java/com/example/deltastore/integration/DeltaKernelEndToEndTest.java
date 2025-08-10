@@ -1,6 +1,5 @@
 package com.example.deltastore.integration;
 
-import com.example.deltastore.api.dto.BatchCreateRequest;
 import com.example.deltastore.api.dto.BatchCreateResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
@@ -8,6 +7,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.context.ActiveProfiles;
@@ -75,8 +75,9 @@ public class DeltaKernelEndToEndTest {
             String userId = testPrefix + "-" + String.format("%03d", i);
             
             try {
-                ResponseEntity<Map> readResponse = restTemplate.exchange(
-                    READ_URL + userId, HttpMethod.GET, null, Map.class);
+                ResponseEntity<Map<String, Object>> readResponse = restTemplate.exchange(
+                    READ_URL + userId, HttpMethod.GET, null, 
+                    new ParameterizedTypeReference<Map<String, Object>>() {});
                 
                 if (readResponse.getStatusCode() == HttpStatus.OK) {
                     Map<String, Object> userData = readResponse.getBody();

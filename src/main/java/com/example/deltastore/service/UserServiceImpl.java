@@ -113,7 +113,8 @@ public class UserServiceImpl implements UserService {
                 
                 try {
                     // Cast List<User> to List<GenericRecord> since User implements GenericRecord
-                    List<org.apache.avro.generic.GenericRecord> genericRecords = new ArrayList<>(chunk);
+                    List<org.apache.avro.generic.GenericRecord> genericRecords = new ArrayList<>();
+                    genericRecords.addAll(chunk);
                     deltaTableManager.write(TABLE_NAME, genericRecords, chunk.get(0).getSchema());
                     
                     // All users in this chunk succeeded

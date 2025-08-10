@@ -8,4 +8,8 @@ public class DeltaStoreException extends RuntimeException {
     public DeltaStoreException(String message, Throwable cause) {
         super(message, cause);
     }
+
+    public DeltaStoreException(Throwable cause) {
+        super(cause);
+    }
 }

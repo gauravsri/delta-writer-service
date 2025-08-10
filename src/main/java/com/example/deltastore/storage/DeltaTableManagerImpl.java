@@ -18,7 +18,6 @@ import io.delta.kernel.expressions.Column;
 import io.delta.kernel.expressions.Literal;
 import io.delta.kernel.expressions.And;
 import io.delta.kernel.utils.CloseableIterator;
-import io.delta.kernel.data.ColumnVector;
 import io.delta.kernel.utils.FileStatus;
 import io.delta.kernel.internal.InternalScanFileUtils;
 import io.delta.kernel.internal.data.ScanStateRow;
@@ -31,17 +30,14 @@ import com.example.deltastore.exception.TableWriteException;
 import com.example.deltastore.util.DataTypeConverter;
 import com.example.deltastore.util.DeltaKernelBatchOperations;
 import io.delta.kernel.DataWriteContext;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.UUID;
 import java.util.HashMap;
 
 @Service
