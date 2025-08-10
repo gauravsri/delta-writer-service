@@ -4,6 +4,8 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
 /**
  * Manages operations on a Delta Lake table, abstracting the low-level

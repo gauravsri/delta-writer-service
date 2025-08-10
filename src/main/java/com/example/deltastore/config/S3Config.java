@@ -1,7 +1,7 @@
 package com.example.deltastore.config;
 
-import lombok.Data;
-import org.springframework.beans.factory.annotation.Value;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -9,40 +9,37 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
-
 import java.net.URI;
 
 @Configuration
+@RequiredArgsConstructor
+@Slf4j
 public class S3Config {
 
-    @Value("${app.storage.endpoint:}")
-    private String endpoint;
-
-    @Value("${app.storage.access-key:}")
-    private String accessKey;
-
-    @Value("${app.storage.secret-key:}")
-    private String secretKey;
+    private final StorageProperties storageProperties;
 
     @Profile("local")
     @Bean
     public S3Client minioClient() {
+        log.info("Configuring MinIO client for endpoint: {}", storageProperties.getEndpoint());
+        log.debug("Using access key: {}", storageProperties.getMaskedAccessKey());
+        
         return S3Client.builder()
-                .endpointOverride(URI.create(endpoint))
+                .endpointOverride(URI.create(storageProperties.getEndpoint()))
                 .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(accessKey, secretKey)))
-                .region(Region.US_EAST_1) // MinIO needs a region
+                        AwsBasicCredentials.create(
+                            storageProperties.getAccessKey(), 
+                            storageProperties.getSecretKey())))
+                .region(Region.US_EAST_1)
                 .forcePathStyle(true)
                 .build();
     }
 
     @Profile("prod")
     @Bean
-
     public S3Client s3Client() {
-        // The client will use the default credential provider chain.
-        // For example, IAM roles on EC2, environment variables, or ~/.aws/credentials.
-        // The region should also be configured in the environment.
+        log.info("Configuring AWS S3 client using default credential provider chain");
+        
         return S3Client.builder()
                 .build();
     }

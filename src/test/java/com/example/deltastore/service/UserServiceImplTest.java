@@ -2,6 +2,8 @@ package com.example.deltastore.service;
 
 import com.example.deltastore.schemas.User;
 import com.example.deltastore.storage.DeltaTableManager;
+import io.micrometer.core.instrument.Timer;
+import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -20,12 +22,16 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 @ExtendWith(MockitoExtension.class)
 class UserServiceImplTest {
 
     @Mock
     private DeltaTableManager deltaTableManager;
+    
+    @Mock
+    private com.example.deltastore.metrics.DeltaStoreMetrics metrics;
 
     @InjectMocks
     private UserServiceImpl userService;
@@ -50,6 +56,11 @@ class UserServiceImplTest {
                 "signup_date", "2024-01-01",
                 "email", "test@example.com"
         );
+        
+        // Setup metrics mocks - using lenient to avoid unnecessary stubbing warnings
+        lenient().when(metrics.startWriteTimer()).thenReturn(Timer.start());
+        lenient().when(metrics.startReadTimer()).thenReturn(Timer.start());
+        lenient().when(metrics.startPartitionReadTimer()).thenReturn(Timer.start());
     }
 
     @Test

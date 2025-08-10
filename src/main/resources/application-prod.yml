@@ -5,8 +5,22 @@ spring:
 
 app:
   storage:
-    type: s3
-    bucket-name: "my-prod-delta-bucket"
+    bucket-name: ${STORAGE_BUCKET_NAME}
     # No endpoint, access-key, or secret-key needed here.
     # The SDK will use the default credential provider chain (e.g., IAM role, env vars).
     # Region can be set via environment variable or instance metadata.
+
+logging:
+  level:
+    com.example.deltastore: INFO
+    org.apache.hadoop: WARN
+    io.delta: WARN
+    
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized

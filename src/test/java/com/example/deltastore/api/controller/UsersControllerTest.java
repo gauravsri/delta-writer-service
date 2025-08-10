@@ -32,10 +32,20 @@ class UsersControllerTest {
 
     @MockBean
     private UserService userService;
+    
+    @MockBean 
+    private com.example.deltastore.validation.UserValidator userValidator;
 
     @Test
     void whenCreateUser_thenReturnsCreated() throws Exception {
-        User newUser = User.newBuilder().setUserId("u1").setUsername("test").build();
+        User newUser = User.newBuilder()
+                .setUserId("u1")
+                .setUsername("test")
+                .setCountry("US")
+                .setSignupDate("2024-01-01")
+                .setEmail("test@example.com")
+                .build();
+        when(userValidator.validate(any(User.class))).thenReturn(Collections.emptyList());
         doNothing().when(userService).save(any(User.class));
 
         mockMvc.perform(post("/api/v1/users")
@@ -46,7 +56,13 @@ class UsersControllerTest {
 
     @Test
     void whenGetUserById_andUserExists_thenReturnsUser() throws Exception {
-        User testUser = User.newBuilder().setUserId("u1").setUsername("test").build();
+        User testUser = User.newBuilder()
+                .setUserId("u1")
+                .setUsername("test")
+                .setCountry("US")
+                .setSignupDate("2024-01-01")
+                .setEmail("test@example.com")
+                .build();
         when(userService.findById("u1")).thenReturn(Optional.of(testUser));
 
         mockMvc.perform(get("/api/v1/users/u1"))
@@ -65,7 +81,13 @@ class UsersControllerTest {
 
     @Test
     void whenFindUsersByPartition_thenReturnsUserList() throws Exception {
-        User testUser = User.newBuilder().setUserId("u1").setUsername("test").setCountry("US").build();
+        User testUser = User.newBuilder()
+                .setUserId("u1")
+                .setUsername("test")
+                .setCountry("US")
+                .setSignupDate("2024-01-01")
+                .setEmail("test@example.com")
+                .build();
         when(userService.findByPartitions(any())).thenReturn(Collections.singletonList(testUser));
 
         mockMvc.perform(get("/api/v1/users").param("country", "US"))

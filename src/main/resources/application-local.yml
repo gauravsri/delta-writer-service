@@ -5,8 +5,21 @@ spring:
 
 app:
   storage:
-    type: minio
-    bucket-name: "delta-local"
+    bucket-name: "my-bucket"
     endpoint: "http://localhost:9000"
-    access-key: "minioadmin"
-    secret-key: "minioadmin"
+    access-key: "minio"
+    secret-key: "minio123"
+
+logging:
+  level:
+    com.example.deltastore: DEBUG
+    org.springframework.web: DEBUG
+    
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+  endpoint:
+    health:
+      show-details: always

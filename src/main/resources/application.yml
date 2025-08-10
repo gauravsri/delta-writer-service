@@ -4,8 +4,35 @@ server:
 spring:
   application:
     name: deltastore
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+    metrics:
+      enabled: true
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active}
 
 app:
+  storage:
+    bucket-name: ${STORAGE_BUCKET_NAME:deltastore-dev}
+    endpoint: ${STORAGE_ENDPOINT:http://localhost:9000}
+    access-key: ${STORAGE_ACCESS_KEY:minioadmin}
+    secret-key: ${STORAGE_SECRET_KEY:minioadmin}
   schema-registry:
     tables:
       - name: "users"
@@ -19,3 +46,12 @@ app:
   optimization:
     cron: "0 0 2 * * ?" # Run at 2 AM daily
     vacuum-retention-hours: 168 # 7 days
+
+logging:
+  level:
+    com.example.deltastore: ${LOG_LEVEL:INFO}
+    org.apache.hadoop: WARN
+    io.delta: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
