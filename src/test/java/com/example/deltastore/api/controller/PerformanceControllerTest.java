@@ -44,7 +44,7 @@ class PerformanceControllerTest {
     @Test
     void testGetMetricsReturnsValidResponse() {
         // Mock metrics data
-        Map<String, Long> mockMetrics = new HashMap<>();
+        Map<String, Object> mockMetrics = new HashMap<>();
         mockMetrics.put("writes", 10L);
         mockMetrics.put("reads", 5L);
         mockMetrics.put("conflicts", 0L);
@@ -77,7 +77,7 @@ class PerformanceControllerTest {
 
     @Test
     void testGetMetricsWithEmptyMetrics() {
-        Map<String, Long> emptyMetrics = new HashMap<>();
+        Map<String, Object> emptyMetrics = new HashMap<>();
         when(optimizedManager.getMetrics()).thenReturn(emptyMetrics);
 
         ResponseEntity<Map<String, Object>> response = performanceController.getMetrics();
@@ -97,7 +97,7 @@ class PerformanceControllerTest {
 
     @Test
     void testGetMetricsTimestampIsRecent() {
-        Map<String, Long> mockMetrics = new HashMap<>();
+        Map<String, Object> mockMetrics = new HashMap<>();
         mockMetrics.put("writes", 1L);
         when(optimizedManager.getMetrics()).thenReturn(mockMetrics);
 
@@ -114,7 +114,7 @@ class PerformanceControllerTest {
 
     @Test
     void testGetMetricsMultipleCallsHaveDifferentTimestamps() throws InterruptedException {
-        Map<String, Long> mockMetrics = new HashMap<>();
+        Map<String, Object> mockMetrics = new HashMap<>();
         mockMetrics.put("writes", 1L);
         when(optimizedManager.getMetrics()).thenReturn(mockMetrics);
 
@@ -136,7 +136,7 @@ class PerformanceControllerTest {
     @Test
     void testGetMetricsHandlesAllMetricTypes() {
         // Test with all expected metric types
-        Map<String, Long> completeMetrics = new HashMap<>();
+        Map<String, Object> completeMetrics = new HashMap<>();
         completeMetrics.put("writes", 100L);
         completeMetrics.put("reads", 50L);
         completeMetrics.put("conflicts", 2L);
@@ -152,7 +152,7 @@ class PerformanceControllerTest {
         Map<String, Object> responseBody = response.getBody();
         
         @SuppressWarnings("unchecked")
-        Map<String, Long> returnedMetrics = (Map<String, Long>) responseBody.get("optimized_metrics");
+        Map<String, Object> returnedMetrics = (Map<String, Object>) responseBody.get("optimized_metrics");
 
         assertEquals(8, returnedMetrics.size());
         assertEquals(100L, returnedMetrics.get("writes"));
@@ -167,7 +167,7 @@ class PerformanceControllerTest {
 
     @Test
     void testGetMetricsResponseStructure() {
-        Map<String, Long> mockMetrics = new HashMap<>();
+        Map<String, Object> mockMetrics = new HashMap<>();
         mockMetrics.put("test_metric", 42L);
         when(optimizedManager.getMetrics()).thenReturn(mockMetrics);
 
@@ -188,7 +188,7 @@ class PerformanceControllerTest {
 
     @Test
     void testOptimizationEnabledAlwaysTrue() {
-        Map<String, Long> mockMetrics = new HashMap<>();
+        Map<String, Object> mockMetrics = new HashMap<>();
         when(optimizedManager.getMetrics()).thenReturn(mockMetrics);
 
         ResponseEntity<Map<String, Object>> response = performanceController.getMetrics();

@@ -18,6 +18,8 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
 import com.example.deltastore.config.StorageProperties;
+import com.example.deltastore.config.DeltaStoreConfiguration;
+import com.example.deltastore.schema.DeltaSchemaManager;
 import com.example.deltastore.exception.TableWriteException;
 import com.example.deltastore.util.DeltaKernelBatchOperations;
 import lombok.extern.slf4j.Slf4j;
@@ -48,20 +50,19 @@ import jakarta.annotation.PreDestroy;
 public class OptimizedDeltaTableManager implements DeltaTableManager {
 
     private final StorageProperties storageProperties;
+    private final DeltaStoreConfiguration config;
+    private final DeltaSchemaManager schemaManager;
+    private final DeltaStoragePathResolver pathResolver;
     private final Configuration hadoopConf;
     private final Engine engine;
     
     // Optimization 1: Snapshot caching
     private final Map<String, CachedSnapshot> snapshotCache = new ConcurrentHashMap<>();
     private final ReentrantReadWriteLock cacheLock = new ReentrantReadWriteLock();
-    private static final long CACHE_TTL_MS = 30000; // 30 seconds cache TTL (increased from 5s)
-    
-    // Optimization 2: Write batching
+    // Dynamic configuration from centralized config
     private final BlockingQueue<WriteBatch> writeQueue = new LinkedBlockingQueue<>();
-    private final ScheduledExecutorService batchExecutor = Executors.newSingleThreadScheduledExecutor();
-    private final ExecutorService commitExecutor = Executors.newFixedThreadPool(2);
-    private static final int MAX_BATCH_SIZE = 100;
-    private static final long BATCH_TIMEOUT_MS = 50; // Reduced from 100ms to 50ms for faster processing
+    private final ScheduledExecutorService batchExecutor;
+    private final ExecutorService commitExecutor;
     
     // Optimization 3: Enhanced Metrics
     private final AtomicLong writeCount = new AtomicLong();
@@ -71,8 +72,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final AtomicLong readCount = new AtomicLong();
     private final AtomicLong avgWriteLatency = new AtomicLong();
     
-    // Optimization 4: Pre-computed schemas
-    private final Map<String, StructType> schemaCache = new ConcurrentHashMap<>();
+    // Schema cache removed - now managed by DeltaSchemaManager
     
     private static class CachedSnapshot {
         final Snapshot snapshot;
@@ -85,8 +85,8 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             this.version = version;
         }
         
-        boolean isValid() {
-            return (System.currentTimeMillis() - timestamp) < CACHE_TTL_MS;
+        boolean isValid(long cacheTtlMs) {
+            return (System.currentTimeMillis() - timestamp) < cacheTtlMs;
         }
     }
     
@@ -106,17 +106,29 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         }
     }
     
-    public OptimizedDeltaTableManager(StorageProperties storageProperties) {
+    public OptimizedDeltaTableManager(StorageProperties storageProperties,
+                                      DeltaStoreConfiguration config,
+                                      DeltaSchemaManager schemaManager,
+                                      DeltaStoragePathResolver pathResolver) {
         this.storageProperties = storageProperties;
+        this.config = config;
+        this.schemaManager = schemaManager;
+        this.pathResolver = pathResolver;
         this.hadoopConf = createOptimizedHadoopConfig();
         this.engine = DefaultEngine.create(hadoopConf);
+        
+        // Initialize executors based on configuration
+        this.batchExecutor = Executors.newSingleThreadScheduledExecutor();
+        this.commitExecutor = Executors.newFixedThreadPool(config.getPerformance().getCommitThreads());
     }
     
     @PostConstruct
     public void init() {
-        // Start batch processor
-        batchExecutor.scheduleWithFixedDelay(this::processBatches, 0, BATCH_TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        log.info("Optimized Delta Table Manager initialized with batching and caching");
+        // Start batch processor with configured timeout
+        long batchTimeoutMs = config.getPerformance().getBatchTimeoutMs();
+        batchExecutor.scheduleWithFixedDelay(this::processBatches, 0, batchTimeoutMs, TimeUnit.MILLISECONDS);
+        log.info("Optimized Delta Table Manager initialized with batching ({}ms) and caching ({}ms TTL)", 
+            batchTimeoutMs, config.getPerformance().getCacheTtlMs());
     }
     
     @PreDestroy
@@ -148,10 +160,11 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             conf.set("fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem");
             conf.set("fs.s3a.connection.ssl.enabled", "false");
             
-            // OPTIMIZATION: Increase connection pool and threads
-            conf.set("fs.s3a.connection.maximum", "200");
-            conf.set("fs.s3a.threads.max", "50");
-            conf.set("fs.s3a.threads.core", "20");
+            // OPTIMIZATION: Use configured connection pool settings
+            int connectionPoolSize = config.getPerformance().getConnectionPoolSize();
+            conf.set("fs.s3a.connection.maximum", String.valueOf(connectionPoolSize));
+            conf.set("fs.s3a.threads.max", String.valueOf(connectionPoolSize / 4));
+            conf.set("fs.s3a.threads.core", String.valueOf(connectionPoolSize / 10));
             
             // OPTIMIZATION: Faster upload settings
             conf.set("fs.s3a.fast.upload", "true");
@@ -198,9 +211,10 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         WriteBatch batch = new WriteBatch(tableName, records, schema);
         writeQueue.offer(batch);
         
-        // Wait for result (with timeout)
+        // Wait for result with configured timeout
         try {
-            TransactionCommitResult result = batch.future.get(30, TimeUnit.SECONDS);
+            long writeTimeoutMs = config.getPerformance().getWriteTimeoutMs();
+            TransactionCommitResult result = batch.future.get(writeTimeoutMs, TimeUnit.MILLISECONDS);
             log.debug("Write completed at version: {}", result.getVersion());
         } catch (Exception e) {
             throw new TableWriteException("Failed to write to table: " + tableName, e);
@@ -212,8 +226,9 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             Map<String, List<WriteBatch>> tableGroups = new HashMap<>();
             List<WriteBatch> currentBatches = new ArrayList<>();
             
-            // Drain queue and group by table
-            writeQueue.drainTo(currentBatches, MAX_BATCH_SIZE);
+            // Drain queue and group by table using configured batch size
+            int maxBatchSize = config.getPerformance().getMaxBatchSize();
+            writeQueue.drainTo(currentBatches, maxBatchSize);
             
             if (currentBatches.isEmpty()) {
                 return;
@@ -245,8 +260,9 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             
             log.info("Processing aggregated batch of {} records for table: {}", allRecords.size(), tableName);
             
-            // Write with retry logic
-            TransactionCommitResult result = writeWithRetry(tableName, allRecords, schema, 3);
+            // Write with configured retry logic
+            int maxRetries = config.getPerformance().getMaxRetries();
+            TransactionCommitResult result = writeWithRetry(tableName, allRecords, schema, maxRetries);
             
             // Complete all futures
             for (WriteBatch batch : batches) {
@@ -265,7 +281,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     
     private TransactionCommitResult writeWithRetry(String tableName, List<GenericRecord> records, 
                                                    Schema schema, int maxRetries) {
-        String tablePath = getTablePath(tableName);
+        String tablePath = pathResolver.resolveBaseTablePath(tableName);
         Exception lastException = null;
         long startTime = System.currentTimeMillis();
         
@@ -285,7 +301,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 );
                 
                 if (isNewTable) {
-                    StructType deltaSchema = getOrCreateDeltaSchema(schema);
+                    StructType deltaSchema = schemaManager.getOrCreateDeltaSchema(schema);
                     txnBuilder = txnBuilder.withSchema(engine, deltaSchema);
                 }
                 
@@ -339,8 +355,8 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         
         log.debug("Writing {} records with optimized Delta protocol", records.size());
         
-        // Infer and cache schema
-        StructType deltaSchema = getOrCreateDeltaSchema(schema);
+        // Get schema using modular schema manager
+        StructType deltaSchema = schemaManager.getOrCreateDeltaSchema(schema);
         
         // Create batch from records
         FilteredColumnarBatch recordBatch = DeltaKernelBatchOperations.createBatchFromAvroRecords(records, deltaSchema);
@@ -384,7 +400,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         cacheLock.readLock().lock();
         try {
             CachedSnapshot cached = snapshotCache.get(tablePath);
-            if (cached != null && cached.isValid()) {
+            if (cached != null && cached.isValid(config.getPerformance().getCacheTtlMs())) {
                 cacheHits.incrementAndGet();
                 log.debug("Cache hit for table: {} (version: {})", tablePath, cached.version);
                 return cached;
@@ -428,17 +444,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         }
     }
     
-    private StructType getOrCreateDeltaSchema(Schema avroSchema) {
-        return schemaCache.computeIfAbsent(avroSchema.getFullName(), k -> {
-            // Simple schema mapping for User schema
-            return new StructType()
-                .add("user_id", io.delta.kernel.types.StringType.STRING, false)
-                .add("username", io.delta.kernel.types.StringType.STRING, false)
-                .add("email", io.delta.kernel.types.StringType.STRING, true)
-                .add("country", io.delta.kernel.types.StringType.STRING, false)
-                .add("signup_date", io.delta.kernel.types.StringType.STRING, false);
-        });
-    }
+    // Hard-coded schema method removed - now handled by DeltaSchemaManager
     
     @Override
     public Optional<Map<String, Object>> read(String tableName, String primaryKeyColumn, String primaryKeyValue) {
@@ -448,7 +454,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             return Optional.empty();
         }
         
-        String tablePath = getTablePath(tableName);
+        String tablePath = pathResolver.resolveBaseTablePath(tableName);
         
         try {
             // Use cached snapshot for optimized reads
@@ -481,16 +487,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         return Collections.emptyList();
     }
     
-    private String getTablePath(String tableName) {
-        String endpoint = storageProperties.getEndpoint();
-        String bucketName = storageProperties.getBucketName();
-        
-        if (endpoint != null && !endpoint.isEmpty()) {
-            return "s3a://" + bucketName + "/" + tableName;
-        } else {
-            return "/tmp/delta-tables/" + bucketName + "/" + tableName;
-        }
-    }
+    // Legacy getTablePath method removed - now handled by DeltaStoragePathResolver
     
     private <T> CloseableIterator<T> createCloseableIterator(Iterator<T> iterator) {
         return new CloseableIterator<T>() {
@@ -511,18 +508,30 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         };
     }
     
-    // Metrics methods for monitoring
-    public Map<String, Long> getMetrics() {
-        return Map.of(
-            "writes", writeCount.get(),
-            "reads", readCount.get(),
-            "conflicts", conflictCount.get(),
-            "cache_hits", cacheHits.get(),
-            "cache_misses", cacheMisses.get(),
-            "queue_size", (long) writeQueue.size(),
-            "avg_write_latency_ms", avgWriteLatency.get(),
-            "cache_hit_rate_percent", cacheHits.get() + cacheMisses.get() > 0 ? 
-                (cacheHits.get() * 100) / (cacheHits.get() + cacheMisses.get()) : 0
-        );
+    // Enhanced metrics methods for monitoring
+    public Map<String, Object> getMetrics() {
+        Map<String, Object> metrics = new HashMap<>();
+        
+        // Core metrics
+        metrics.put("writes", writeCount.get());
+        metrics.put("reads", readCount.get());
+        metrics.put("conflicts", conflictCount.get());
+        metrics.put("cache_hits", cacheHits.get());
+        metrics.put("cache_misses", cacheMisses.get());
+        metrics.put("queue_size", (long) writeQueue.size());
+        metrics.put("avg_write_latency_ms", avgWriteLatency.get());
+        metrics.put("cache_hit_rate_percent", cacheHits.get() + cacheMisses.get() > 0 ? 
+            (cacheHits.get() * 100) / (cacheHits.get() + cacheMisses.get()) : 0);
+            
+        // Configuration metrics
+        metrics.put("configured_cache_ttl_ms", config.getPerformance().getCacheTtlMs());
+        metrics.put("configured_batch_timeout_ms", config.getPerformance().getBatchTimeoutMs());
+        metrics.put("configured_max_batch_size", config.getPerformance().getMaxBatchSize());
+        metrics.put("configured_max_retries", config.getPerformance().getMaxRetries());
+        
+        // Schema manager metrics
+        metrics.put("schema_cache_stats", schemaManager.getCacheStats());
+        
+        return metrics;
     }
 }

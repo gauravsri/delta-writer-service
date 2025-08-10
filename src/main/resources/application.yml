@@ -27,25 +27,64 @@ management:
       application: ${spring.application.name}
       environment: ${spring.profiles.active}
 
+# Legacy configuration (kept for backward compatibility)
 app:
   storage:
     bucket-name: ${STORAGE_BUCKET_NAME:deltastore-dev}
     endpoint: ${STORAGE_ENDPOINT:http://localhost:9000}
     access-key: ${STORAGE_ACCESS_KEY:minioadmin}
     secret-key: ${STORAGE_SECRET_KEY:minioadmin}
-  schema-registry:
-    tables:
-      - name: "users"
-        schema-path: "classpath:schemas/users.avsc"
-        primary-key: "user_id"
-        partition-by: ["country", "signup_date"]
-      - name: "products"
-        schema-path: "classpath:schemas/products.avsc"
-        primary-key: "product_id"
-        partition-by: ["category"]
-  optimization:
-    cron: "0 0 2 * * ?" # Run at 2 AM daily
-    vacuum-retention-hours: 168 # 7 days
+
+# New centralized configuration
+deltastore:
+  performance:
+    cache-ttl-ms: 30000          # 30 seconds cache TTL
+    batch-timeout-ms: 50         # 50ms batch processing
+    max-batch-size: 100          # Max records per batch
+    max-retries: 3               # Retry attempts for failed operations
+    connection-pool-size: 200    # S3 connection pool size
+    write-timeout-ms: 30000      # Write operation timeout
+    commit-threads: 2            # Number of commit executor threads
+    
+  schema:
+    evolution-policy: BACKWARD_COMPATIBLE
+    enable-schema-validation: true
+    auto-register-schemas: true
+    cache-schemas: true
+    schema-cache-ttl-ms: 300000  # 5 minutes schema cache
+    
+  storage:
+    type: S3A
+    base-path: "/delta-tables"
+    partition-strategy: DATE_BASED
+    enable-compression: true
+    compression-codec: "snappy"
+    
+  tables:
+    users:
+      primary-key-column: "user_id"
+      partition-columns: ["country", "signup_date"]
+      evolution-policy: BACKWARD_COMPATIBLE
+      partition-strategy: DATE_BASED
+      enable-optimization: true
+      optimization-interval-ms: 3600000  # 1 hour
+      properties:
+        delta.autoOptimize.optimizeWrite: "true"
+        delta.autoOptimize.autoCompact: "true"
+    
+    orders:
+      primary-key-column: "order_id"
+      partition-columns: ["order_date", "region"]
+      evolution-policy: BACKWARD_COMPATIBLE
+      partition-strategy: DATE_BASED
+      enable-optimization: true
+      
+    products:
+      primary-key-column: "product_id"
+      partition-columns: ["category"]
+      evolution-policy: FORWARD_COMPATIBLE
+      partition-strategy: HASH_BASED
+      enable-optimization: false  # Large table, manual optimization
 
 logging:
   level:

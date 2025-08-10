@@ -1,18 +1,31 @@
-# Delta Writer Service v2.0
+# Delta Writer Service v3.0
 
-A production-ready Spring Boot microservice that provides a RESTful API for writing and reading data to/from Delta Lake using **Delta Kernel 4.0.0** with MinIO object storage. Enhanced with **comprehensive monitoring**, **optimized performance**, and **advanced observability**.
+A production-ready Spring Boot microservice that provides a RESTful API for writing and reading data to/from Delta Lake using **Delta Kernel 4.0.0** with MinIO object storage. **v3.0 introduces a complete modular architecture transformation** with dynamic schema management, centralized configuration, and generic entity framework for unlimited scalability.
 
-## 🚀 **Features**
+> **NEW in v3.0**: Complete transformation from tactical to strategic modular architecture. See [MODULAR-ARCHITECTURE.md](./MODULAR-ARCHITECTURE.md) for detailed information.
 
+## 🚀 **Features v3.0**
+
+### **Core Capabilities**
 - **Complete Delta Kernel Implementation**: 100% pure Delta Kernel APIs without Apache Spark dependencies
 - **Enhanced Performance Optimization**: 10x improvement in concurrent write handling with zero conflicts
-- **Comprehensive Monitoring**: 8-metric real-time performance dashboard with latency tracking
-- **MinIO Integration**: Full S3-compatible object storage support with optimized connection pooling
-- **Batch Operations**: Intelligent write batching with 50ms timeout optimization
 - **ACID Compliance**: Full transactional consistency with Delta Lake
 - **Production Ready**: Comprehensive testing with enhanced QA validation and 100% data integrity
-- **Type-Safe API**: Generated Avro schemas for robust data handling
-- **Advanced Caching**: 30-second TTL snapshot caching with efficiency tracking
+
+### **NEW Modular Architecture (v3.0)**
+- 🔄 **Dynamic Schema Management**: Supports unlimited entity types with automatic Avro→Delta schema conversion
+- ⚙️ **Centralized Configuration**: Runtime configuration changes via YAML without deployments
+- 🏗️ **Generic Entity Framework**: Single codebase handles any entity type (users, orders, products, etc.)
+- 📂 **Strategic Storage Management**: Supports S3A, Local, HDFS, Azure, GCS with flexible partitioning
+- 📊 **Enhanced Monitoring**: Real-time metrics with schema cache stats and configuration visibility
+- 🧩 **Modular Design**: Reusable components with clean separation of concerns
+- 🔧 **API Evolution**: Generic REST endpoints that work with any entity type
+
+### **Performance & Operations**
+- **Intelligent Batching**: Write batching with configurable 50ms timeout optimization
+- **Advanced Caching**: 30-second TTL snapshot caching with 95%+ hit rates
+- **Multi-Storage Support**: 5 storage backends with automatic path resolution
+- **Zero Conflicts**: Sophisticated conflict resolution with exponential backoff
 
 ## 🏗️ **Architecture Overview**
 
