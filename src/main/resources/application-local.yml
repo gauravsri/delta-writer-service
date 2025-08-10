@@ -13,6 +13,12 @@ app:
 # LOCAL/TEST ENTITY CONFIGURATIONS
 # These entities are used exclusively for local development and testing
 deltastore:
+  performance:
+    batchTimeoutMs: 50              # Optimized batch timeout
+    maxBatchSize: 1000              # Increased for better Parquet file sizes
+    checkpointInterval: 10          # Create checkpoint every 10 versions
+    connectionPoolSize: 200         # S3A connection pool
+    enableBatchConsolidation: true  # Enable batch consolidation
   tables:
     # TEST ENTITIES (for validating generic entity framework)
     users:

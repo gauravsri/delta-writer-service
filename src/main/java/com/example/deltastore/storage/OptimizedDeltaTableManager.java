@@ -336,16 +336,20 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 // PERFORMANCE OPTIMIZATION: Create checkpoint at regular intervals
                 // This is critical to prevent full transaction log scans that cause 12+ second latencies
                 try {
+                    log.info("Checking if checkpoint should be created for version {}", result.getVersion());
                     if (shouldCreateCheckpoint(result.getVersion())) {
+                        log.info("Creating checkpoint for table {} at version {}", tableName, result.getVersion());
                         table.checkpoint(engine, result.getVersion());
                         checkpointCount.incrementAndGet();
-                        log.info("Created checkpoint at version {} for table {} to optimize future reads", 
+                        log.info("✓ Successfully created checkpoint at version {} for table {} to optimize future reads", 
                                 result.getVersion(), tableName);
+                    } else {
+                        log.debug("Checkpoint not needed for version {}", result.getVersion());
                     }
                 } catch (Exception checkpointError) {
                     // Don't fail the write if checkpoint fails, but log it
-                    log.warn("Failed to create checkpoint at version {} for table {}: {}", 
-                            result.getVersion(), tableName, checkpointError.getMessage());
+                    log.error("Failed to create checkpoint at version {} for table {}: {}", 
+                            result.getVersion(), tableName, checkpointError.getMessage(), checkpointError);
                 }
                 
                 // Update latency metrics
@@ -387,7 +391,12 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private boolean shouldCreateCheckpoint(long version) {
         // Create checkpoint every N versions (configurable, default 10)
         long checkpointInterval = config.getPerformance().getCheckpointInterval();
-        return version % checkpointInterval == 0 && version > 0;
+        boolean shouldCreate = version % checkpointInterval == 0 && version > 0;
+        
+        log.debug("Checkpoint check: version={}, interval={}, modulo={}, shouldCreate={}", 
+                 version, checkpointInterval, version % checkpointInterval, shouldCreate);
+        
+        return shouldCreate;
     }
     
     private boolean doesTableExist(String tablePath) {
