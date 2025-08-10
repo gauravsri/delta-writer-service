@@ -46,8 +46,9 @@ A high-performance, scalable **write-only Delta Lake service** built with Spring
 git clone <repository-url>
 cd delta-writer-service
 
-# 2. Start MinIO (or configure your S3 endpoint)
-docker run -p 9000:9000 -p 9001:9001 minio/minio server /data --console-address ":9001"
+# 2. Start MinIO via Podman (assuming MinIO is already running on localhost:9000)
+# MinIO should be accessible at http://localhost:9000 with credentials minio/minio123
+# If not running, start with: podman run -p 9000:9000 -p 9001:9001 minio/minio server /data --console-address ":9001"
 
 # 3. Run application
 mvn spring-boot:run
@@ -246,8 +247,8 @@ deltastore:
 # Storage configuration
 STORAGE_ENDPOINT=http://localhost:9000
 STORAGE_BUCKET_NAME=deltastore-dev
-STORAGE_ACCESS_KEY=minioadmin
-STORAGE_SECRET_KEY=minioadmin
+STORAGE_ACCESS_KEY=minio
+STORAGE_SECRET_KEY=minio123
 
 # Performance tuning
 DELTA_CACHE_TTL=30000
