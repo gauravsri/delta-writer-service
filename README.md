@@ -115,8 +115,8 @@ docker-compose up --build
 
 #### **Create Entities (Any Type)**
 ```bash
-# Single entity
-POST /api/v1/entities/{entityType}
+# Production entity (users)
+POST /api/v1/entities/users
 Content-Type: application/json
 
 {
@@ -125,6 +125,16 @@ Content-Type: application/json
   "email": "john@example.com",
   "country": "US",
   "signup_date": "2024-08-10"
+}
+
+# Test entity example (orders - for testing/demo only)
+POST /api/v1/entities/orders
+{
+  "order_id": "ord001",
+  "customer_id": "user123", 
+  "total_amount": 99.99,
+  "region": "US",
+  "order_date": "2024-08-10"
 }
 
 # Batch entities  
@@ -262,10 +272,15 @@ open target/site/jacoco/index.html
 ```
 
 ### **Test Coverage**
-- **Unit Tests**: 50+ comprehensive test classes
+- **Unit Tests**: 55+ comprehensive test classes
 - **Integration Tests**: End-to-end validation scenarios  
 - **Performance Tests**: Load testing and benchmarking
 - **Coverage**: 95% of critical business logic
+
+### **Entity Types**
+- **Production Entities**: `users` - The main business entity
+- **Test/Demo Entities**: `orders`, `products` - Used exclusively for testing the generic entity framework
+- **Dynamic Entities**: Any entity type can be registered at runtime via API
 
 ---
 
