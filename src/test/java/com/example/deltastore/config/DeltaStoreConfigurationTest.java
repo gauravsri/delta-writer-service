@@ -24,7 +24,7 @@ class DeltaStoreConfigurationTest {
         DeltaStoreConfiguration.Performance performance = config.getPerformance();
         assertEquals(30000L, performance.getCacheTtlMs());
         assertEquals(50L, performance.getBatchTimeoutMs());
-        assertEquals(100, performance.getMaxBatchSize());
+        assertEquals(1000, performance.getMaxBatchSize());
         assertEquals(3, performance.getMaxRetries());
         assertEquals(200, performance.getConnectionPoolSize());
         assertEquals(30000L, performance.getWriteTimeoutMs());
@@ -121,7 +121,7 @@ class DeltaStoreConfigurationTest {
         assertThrows(IllegalArgumentException.class, () -> config.validateConfiguration());
         
         // Reset and test invalid base path
-        config.getPerformance().setMaxBatchSize(100);
+        config.getPerformance().setMaxBatchSize(1000);
         config.getStorage().setBasePath("");
         assertThrows(IllegalArgumentException.class, () -> config.validateConfiguration());
     }
