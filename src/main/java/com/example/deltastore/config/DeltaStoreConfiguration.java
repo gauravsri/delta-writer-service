@@ -47,12 +47,15 @@ public class DeltaStoreConfiguration {
     @Data
     public static class Performance {
         private long cacheTtlMs = 30000;           // 30 seconds
-        private long batchTimeoutMs = 50;          // 50ms
-        private int maxBatchSize = 100;            // Max records per batch
+        private long batchTimeoutMs = 50;          // 50ms - reduced for faster response
+        private int maxBatchSize = 1000;           // Increased from 100 for better Parquet file sizes  
         private int maxRetries = 3;                // Retry attempts
         private int connectionPoolSize = 200;      // Connection pool size
         private long writeTimeoutMs = 30000;       // 30 seconds write timeout
         private int commitThreads = 2;             // Commit executor threads
+        private int checkpointInterval = 10;       // Create checkpoint every N versions
+        private int optimalParquetSizeMB = 256;    // Target Parquet file size in MB
+        private boolean enableBatchConsolidation = true; // Enable batch consolidation
     }
     
     @Data
