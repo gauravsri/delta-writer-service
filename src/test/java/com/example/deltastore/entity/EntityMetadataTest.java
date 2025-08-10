@@ -177,6 +177,72 @@ class EntityMetadataTest {
     }
 
     @Test
+    void testPropertiesField() {
+        Schema schema = User.getClassSchema();
+        java.util.Map<String, String> properties = java.util.Map.of(
+            "delta.autoOptimize.optimizeWrite", "true",
+            "delta.autoOptimize.autoCompact", "false"
+        );
+        
+        EntityMetadata metadata = EntityMetadata.builder()
+            .entityType("users")
+            .schema(schema)
+            .properties(properties)
+            .build();
+            
+        assertEquals(properties, metadata.getProperties());
+        assertEquals("true", metadata.getProperties().get("delta.autoOptimize.optimizeWrite"));
+        assertEquals("false", metadata.getProperties().get("delta.autoOptimize.autoCompact"));
+    }
+    
+    @Test
+    void testAllFieldsBuilder() {
+        Schema schema = User.getClassSchema();
+        LocalDateTime registeredAt = LocalDateTime.now();
+        LocalDateTime lastUpdated = LocalDateTime.now().plusMinutes(1);
+        List<String> partitionColumns = List.of("country", "signup_date");
+        java.util.Map<String, String> properties = java.util.Map.of("key", "value");
+        
+        EntityMetadata metadata = EntityMetadata.builder()
+            .entityType("users")
+            .schema(schema)
+            .primaryKeyColumn("user_id")
+            .partitionColumns(partitionColumns)
+            .properties(properties)
+            .registeredAt(registeredAt)
+            .lastUpdated(lastUpdated)
+            .schemaVersion("v2.0.0")
+            .active(true)
+            .build();
+            
+        // Verify all fields are set correctly
+        assertEquals("users", metadata.getEntityType());
+        assertEquals(schema, metadata.getSchema());
+        assertEquals("user_id", metadata.getPrimaryKeyColumn());
+        assertEquals(partitionColumns, metadata.getPartitionColumns());
+        assertEquals(properties, metadata.getProperties());
+        assertEquals(registeredAt, metadata.getRegisteredAt());
+        assertEquals(lastUpdated, metadata.getLastUpdated());
+        assertEquals("v2.0.0", metadata.getSchemaVersion());
+        assertTrue(metadata.isActive());
+    }
+    
+    @Test
+    void testCanaryTest() {
+        // Simple canary test to ensure builder works with null properties
+        Schema schema = User.getClassSchema();
+        
+        EntityMetadata metadata = EntityMetadata.builder()
+            .entityType("canary")
+            .schema(schema)
+            .properties(null)
+            .build();
+            
+        assertEquals("canary", metadata.getEntityType());
+        assertNull(metadata.getProperties());
+    }
+
+    @Test
     void testEqualsAndHashCode() {
         Schema schema = User.getClassSchema();
         
