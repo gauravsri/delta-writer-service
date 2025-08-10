@@ -10,6 +10,38 @@ app:
     access-key: "minio"
     secret-key: "minio123"
 
+# LOCAL/TEST ENTITY CONFIGURATIONS
+# These entities are used exclusively for local development and testing
+deltastore:
+  tables:
+    # TEST ENTITIES (for validating generic entity framework)
+    users:
+      primary-key-column: "user_id"
+      partition-columns: ["country", "signup_date"]
+      evolution-policy: BACKWARD_COMPATIBLE
+      partition-strategy: DATE_BASED
+      enable-optimization: true  # Use OptimizedDeltaTableManager (default)
+      properties:
+        delta.autoOptimize.optimizeWrite: "true"
+        delta.autoOptimize.autoCompact: "true"
+      description: "Test entity for local development and testing"
+    
+    orders:
+      primary-key-column: "order_id"
+      partition-columns: ["order_date", "region"]
+      evolution-policy: BACKWARD_COMPATIBLE
+      partition-strategy: DATE_BASED
+      enable-optimization: true  # Use OptimizedDeltaTableManager (default)
+      description: "Test entity for demonstrating generic entity framework"
+      
+    products:
+      primary-key-column: "product_id"
+      partition-columns: ["category"]
+      evolution-policy: FORWARD_COMPATIBLE
+      partition-strategy: HASH_BASED
+      enable-optimization: true  # Use OptimizedDeltaTableManager (default)
+      description: "Test entity for demonstrating generic entity framework"
+
 logging:
   level:
     com.example.deltastore: DEBUG

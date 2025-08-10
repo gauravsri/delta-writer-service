@@ -60,36 +60,10 @@ deltastore:
     enable-compression: true
     compression-codec: "snappy"
     
-  tables:
-    # PRODUCTION ENTITIES
-    users:
-      primary-key-column: "user_id"
-      partition-columns: ["country", "signup_date"]
-      evolution-policy: BACKWARD_COMPATIBLE
-      partition-strategy: DATE_BASED
-      enable-optimization: true
-      optimization-interval-ms: 3600000  # 1 hour
-      properties:
-        delta.autoOptimize.optimizeWrite: "true"
-        delta.autoOptimize.autoCompact: "true"
-    
-    # TEST/DEMO ENTITIES (for testing generic entity framework)
-    # These entities demonstrate multi-entity capabilities but are not used in production
-    orders:
-      primary-key-column: "order_id"
-      partition-columns: ["order_date", "region"]
-      evolution-policy: BACKWARD_COMPATIBLE
-      partition-strategy: DATE_BASED
-      enable-optimization: false   # Test entity - optimization disabled
-      description: "Test entity for demonstrating generic entity framework"
-      
-    products:
-      primary-key-column: "product_id"
-      partition-columns: ["category"]
-      evolution-policy: FORWARD_COMPATIBLE
-      partition-strategy: HASH_BASED
-      enable-optimization: false   # Test entity - optimization disabled
-      description: "Test entity for demonstrating generic entity framework"
+  # No tables configured in base profile
+  # All entity configurations are profile-specific
+  # Production deployments should define their own entity configurations
+  tables: {}
 
 logging:
   level:

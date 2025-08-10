@@ -115,7 +115,7 @@ docker-compose up --build
 
 #### **Create Entities (Any Type)**
 ```bash
-# Production entity (users)
+# Local/test entity example (users - local profile only)
 POST /api/v1/entities/users
 Content-Type: application/json
 
@@ -127,7 +127,7 @@ Content-Type: application/json
   "signup_date": "2024-08-10"
 }
 
-# Test entity example (orders - for testing/demo only)
+# Local/test entity example (orders - local profile only)
 POST /api/v1/entities/orders
 {
   "order_id": "ord001",
@@ -278,9 +278,11 @@ open target/site/jacoco/index.html
 - **Coverage**: 95% of critical business logic
 
 ### **Entity Types**
-- **Production Entities**: `users` - The main business entity
-- **Test/Demo Entities**: `orders`, `products` - Used exclusively for testing the generic entity framework
+- **Local/Test Entities**: `users`, `orders`, `products` - Used exclusively for local development and testing (local profile)
+- **Production Entities**: None configured by default - production deployments define their own entities
 - **Dynamic Entities**: Any entity type can be registered at runtime via API
+
+> **Note**: All configured entities are test/demo entities for local development. Production deployments should define their own entity configurations.
 
 ---
 
