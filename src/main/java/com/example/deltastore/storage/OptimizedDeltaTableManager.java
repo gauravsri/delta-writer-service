@@ -1,7 +1,6 @@
 package com.example.deltastore.storage;
 
 import io.delta.kernel.Table;
-import io.delta.kernel.Snapshot;
 import io.delta.kernel.engine.Engine;
 import io.delta.kernel.Transaction;
 import io.delta.kernel.TransactionBuilder;
@@ -31,17 +30,12 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 
 /**
- * Optimized Delta Table Manager with transaction protocol improvements:
- * 1. Snapshot caching to avoid re-scanning metadata
- * 2. Write batching and aggregation  
- * 3. Conflict resolution with retry logic
- * 4. Connection pooling and reuse
- * 5. Asynchronous commit pipeline
+ * Write-only Delta Table Manager focused on high-performance write operations using Delta Kernel APIs.
+ * All read functionality has been removed to simplify the codebase and focus on what works well.
  */
 @Service
 @Primary
@@ -56,53 +50,27 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final Configuration hadoopConf;
     private final Engine engine;
     
-    // Optimization 1: Snapshot caching
-    private final Map<String, CachedSnapshot> snapshotCache = new ConcurrentHashMap<>();
-    private final ReentrantReadWriteLock cacheLock = new ReentrantReadWriteLock();
-    // Dynamic configuration from centralized config
+    // Write batching optimization
     private final BlockingQueue<WriteBatch> writeQueue = new LinkedBlockingQueue<>();
     private final ScheduledExecutorService batchExecutor;
     private final ExecutorService commitExecutor;
     
-    // Optimization 3: Enhanced Metrics
+    // Write-only metrics
     private final AtomicLong writeCount = new AtomicLong();
     private final AtomicLong conflictCount = new AtomicLong();
-    private final AtomicLong cacheHits = new AtomicLong();
-    private final AtomicLong cacheMisses = new AtomicLong();
-    private final AtomicLong readCount = new AtomicLong();
     private final AtomicLong avgWriteLatency = new AtomicLong();
-    
-    // Schema cache removed - now managed by DeltaSchemaManager
-    
-    private static class CachedSnapshot {
-        final Snapshot snapshot;
-        final long timestamp;
-        final long version;
-        
-        CachedSnapshot(Snapshot snapshot, long version) {
-            this.snapshot = snapshot;
-            this.timestamp = System.currentTimeMillis();
-            this.version = version;
-        }
-        
-        boolean isValid(long cacheTtlMs) {
-            return (System.currentTimeMillis() - timestamp) < cacheTtlMs;
-        }
-    }
     
     private static class WriteBatch {
         final String tableName;
         final List<GenericRecord> records;
         final Schema schema;
         final CompletableFuture<TransactionCommitResult> future;
-        final long timestamp;
         
         WriteBatch(String tableName, List<GenericRecord> records, Schema schema) {
             this.tableName = tableName;
             this.records = records;
             this.schema = schema;
             this.future = new CompletableFuture<>();
-            this.timestamp = System.currentTimeMillis();
         }
     }
     
@@ -127,8 +95,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         // Start batch processor with configured timeout
         long batchTimeoutMs = config.getPerformance().getBatchTimeoutMs();
         batchExecutor.scheduleWithFixedDelay(this::processBatches, 0, batchTimeoutMs, TimeUnit.MILLISECONDS);
-        log.info("Optimized Delta Table Manager initialized with batching ({}ms) and caching ({}ms TTL)", 
-            batchTimeoutMs, config.getPerformance().getCacheTtlMs());
+        log.info("Write-only Delta Table Manager initialized with batching ({}ms)", batchTimeoutMs);
     }
     
     @PreDestroy
@@ -287,16 +254,15 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         
         for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {
-                // Get or create cached snapshot
-                CachedSnapshot cached = getCachedSnapshot(tablePath);
-                boolean isNewTable = (cached == null);
+                // Check if table exists
+                boolean isNewTable = !doesTableExist(tablePath);
                 
                 Table table = Table.forPath(engine, tablePath);
                 
                 // Build transaction with proper operation
                 TransactionBuilder txnBuilder = table.createTransactionBuilder(
                     engine,
-                    "Optimized Delta Writer v2.0",
+                    "Write-only Delta Writer v3.0",
                     isNewTable ? Operation.CREATE_TABLE : Operation.WRITE
                 );
                 
@@ -309,9 +275,6 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 
                 // Use optimized write method
                 TransactionCommitResult result = writeOptimizedDeltaRecords(txn, records, schema);
-                
-                // Invalidate cache on successful write
-                invalidateSnapshot(tablePath);
                 
                 // Update latency metrics
                 long latency = System.currentTimeMillis() - startTime;
@@ -335,9 +298,6 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                     throw new TableWriteException("Interrupted during retry", ie);
                 }
                 
-                // Clear cache to force refresh
-                invalidateSnapshot(tablePath);
-                
             } catch (Exception e) {
                 lastException = e;
                 log.error("Unexpected error on attempt {} for table {}", attempt, tableName, e);
@@ -346,6 +306,16 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         }
         
         throw new TableWriteException("Failed to write after " + maxRetries + " attempts", lastException);
+    }
+    
+    private boolean doesTableExist(String tablePath) {
+        try {
+            Table table = Table.forPath(engine, tablePath);
+            table.getLatestSnapshot(engine);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
     
     private TransactionCommitResult writeOptimizedDeltaRecords(Transaction txn, 
@@ -396,99 +366,6 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         return txn.commit(engine, dataActionsIterable);
     }
     
-    private CachedSnapshot getCachedSnapshot(String tablePath) {
-        cacheLock.readLock().lock();
-        try {
-            CachedSnapshot cached = snapshotCache.get(tablePath);
-            if (cached != null && cached.isValid(config.getPerformance().getCacheTtlMs())) {
-                cacheHits.incrementAndGet();
-                log.debug("Cache hit for table: {} (version: {})", tablePath, cached.version);
-                return cached;
-            }
-        } finally {
-            cacheLock.readLock().unlock();
-        }
-        
-        // Cache miss - try to load snapshot
-        cacheMisses.incrementAndGet();
-        try {
-            Table table = Table.forPath(engine, tablePath);
-            Snapshot snapshot = table.getLatestSnapshot(engine);
-            long version = System.currentTimeMillis(); // Use timestamp as pseudo-version
-            
-            CachedSnapshot cached = new CachedSnapshot(snapshot, version);
-            
-            cacheLock.writeLock().lock();
-            try {
-                snapshotCache.put(tablePath, cached);
-            } finally {
-                cacheLock.writeLock().unlock();
-            }
-            
-            log.debug("Loaded and cached snapshot for table: {} (version: {})", tablePath, version);
-            return cached;
-            
-        } catch (Exception e) {
-            log.debug("Table does not exist: {}", tablePath);
-            return null;
-        }
-    }
-    
-    private void invalidateSnapshot(String tablePath) {
-        cacheLock.writeLock().lock();
-        try {
-            snapshotCache.remove(tablePath);
-            log.debug("Invalidated cache for table: {}", tablePath);
-        } finally {
-            cacheLock.writeLock().unlock();
-        }
-    }
-    
-    // Hard-coded schema method removed - now handled by DeltaSchemaManager
-    
-    @Override
-    public Optional<Map<String, Object>> read(String tableName, String primaryKeyColumn, String primaryKeyValue) {
-        readCount.incrementAndGet();
-        
-        if (tableName == null || primaryKeyColumn == null || primaryKeyValue == null) {
-            return Optional.empty();
-        }
-        
-        String tablePath = pathResolver.resolveBaseTablePath(tableName);
-        
-        try {
-            // Use cached snapshot for optimized reads
-            CachedSnapshot cached = getCachedSnapshot(tablePath);
-            
-            if (cached == null) {
-                log.debug("Table does not exist: {}", tableName);
-                return Optional.empty();
-            }
-            
-            log.debug("Reading from table: {} with cached snapshot version: {}", tableName, cached.version);
-            
-            // Simple scan implementation - returns empty for now but tracks the call
-            io.delta.kernel.ScanBuilder scanBuilder = cached.snapshot.getScanBuilder();
-            io.delta.kernel.Scan scan = scanBuilder.build();
-            
-            log.info("Read operation completed - simplified implementation returned empty result");
-            return Optional.empty();
-            
-        } catch (Exception e) {
-            log.error("Error reading from table: {}", tableName, e);
-            return Optional.empty();
-        }
-    }
-    
-    @Override
-    public List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters) {
-        log.info("Partition read operation requested for table: {} with filters: {}", tableName, partitionFilters);
-        // Simplified implementation - return empty list for now
-        return Collections.emptyList();
-    }
-    
-    // Legacy getTablePath method removed - now handled by DeltaStoragePathResolver
-    
     private <T> CloseableIterator<T> createCloseableIterator(Iterator<T> iterator) {
         return new CloseableIterator<T>() {
             @Override
@@ -508,23 +385,17 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         };
     }
     
-    // Enhanced metrics methods for monitoring
+    // Write-only metrics
     public Map<String, Object> getMetrics() {
         Map<String, Object> metrics = new HashMap<>();
         
-        // Core metrics
+        // Core write metrics
         metrics.put("writes", writeCount.get());
-        metrics.put("reads", readCount.get());
         metrics.put("conflicts", conflictCount.get());
-        metrics.put("cache_hits", cacheHits.get());
-        metrics.put("cache_misses", cacheMisses.get());
         metrics.put("queue_size", (long) writeQueue.size());
         metrics.put("avg_write_latency_ms", avgWriteLatency.get());
-        metrics.put("cache_hit_rate_percent", cacheHits.get() + cacheMisses.get() > 0 ? 
-            (cacheHits.get() * 100) / (cacheHits.get() + cacheMisses.get()) : 0);
             
         // Configuration metrics
-        metrics.put("configured_cache_ttl_ms", config.getPerformance().getCacheTtlMs());
         metrics.put("configured_batch_timeout_ms", config.getPerformance().getBatchTimeoutMs());
         metrics.put("configured_max_batch_size", config.getPerformance().getMaxBatchSize());
         metrics.put("configured_max_retries", config.getPerformance().getMaxRetries());

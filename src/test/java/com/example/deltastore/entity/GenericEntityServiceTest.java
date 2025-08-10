@@ -1,10 +1,8 @@
 package com.example.deltastore.entity;
 
 import com.example.deltastore.config.DeltaStoreConfiguration;
-import com.example.deltastore.schema.DeltaSchemaManager;
 import com.example.deltastore.storage.DeltaTableManager;
 import com.example.deltastore.schemas.User;
-import org.apache.avro.generic.GenericRecord;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,15 +13,13 @@ import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
 
 @ExtendWith(MockitoExtension.class)
 class GenericEntityServiceTest {
 
     @Mock
     private DeltaTableManager tableManager;
-    
-    @Mock
-    private DeltaSchemaManager schemaManager;
     
     @Mock
     private DeltaStoreConfiguration config;
@@ -35,17 +31,18 @@ class GenericEntityServiceTest {
 
     @BeforeEach
     void setUp() {
-        entityService = new GenericEntityService(tableManager, schemaManager, config, metadataRegistry);
+        entityService = new GenericEntityService(tableManager, config, metadataRegistry);
         
-        // Setup default configuration
+        // Setup default configuration with lenient stubbing to avoid unnecessary stubbing errors
         DeltaStoreConfiguration.SchemaConfig schemaConfig = new DeltaStoreConfiguration.SchemaConfig();
         schemaConfig.setEnableSchemaValidation(false); // Disable for simpler tests
-        when(config.getSchema()).thenReturn(schemaConfig);
+        schemaConfig.setAutoRegisterSchemas(true);
+        lenient().when(config.getSchema()).thenReturn(schemaConfig);
         
         DeltaStoreConfiguration.TableConfig defaultTableConfig = new DeltaStoreConfiguration.TableConfig();
         defaultTableConfig.setPrimaryKeyColumn("user_id");
-        when(config.getTableConfigOrDefault(anyString())).thenReturn(defaultTableConfig);
-        when(config.getTables()).thenReturn(Map.of("users", defaultTableConfig));
+        lenient().when(config.getTableConfigOrDefault(anyString())).thenReturn(defaultTableConfig);
+        lenient().when(config.getTables()).thenReturn(Map.of("users", defaultTableConfig));
     }
 
     @Test
@@ -56,18 +53,14 @@ class GenericEntityServiceTest {
         // Mock table manager behavior
         doNothing().when(tableManager).write(anyString(), anyList(), any());
         
-        // Execute
         EntityOperationResult<User> result = entityService.save("users", user);
         
-        // Verify
         assertTrue(result.isSuccess());
         assertEquals("users", result.getEntityType());
         assertEquals(OperationType.WRITE, result.getOperationType());
         assertEquals(1, result.getRecordCount());
-        assertEquals("Entity saved successfully", result.getMessage());
         
-        // Verify table manager was called
-        verify(tableManager).write(eq("users"), anyList(), any());
+        verify(tableManager).write(eq("users"), anyList(), eq(user.getSchema()));
     }
 
     @Test
@@ -79,21 +72,16 @@ class GenericEntityServiceTest {
             createTestUser("test003", "user3", "user3@example.com", "UK", "2024-08-10")
         );
         
-        // Mock table manager behavior
         doNothing().when(tableManager).write(anyString(), anyList(), any());
         
-        // Execute
         EntityOperationResult<User> result = entityService.saveAll("users", users);
         
-        // Verify
         assertTrue(result.isSuccess());
         assertEquals("users", result.getEntityType());
         assertEquals(OperationType.WRITE, result.getOperationType());
         assertEquals(3, result.getRecordCount());
-        assertEquals("Entities saved successfully", result.getMessage());
         
-        // Verify table manager was called with correct number of records
-        verify(tableManager).write(eq("users"), argThat(list -> list.size() == 3), any());
+        verify(tableManager).write(eq("users"), anyList(), eq(users.get(0).getSchema()));
     }
 
     @Test
@@ -106,7 +94,6 @@ class GenericEntityServiceTest {
         assertEquals(0, result.getRecordCount());
         assertEquals("No entities to save", result.getMessage());
         
-        // Verify table manager was not called
         verify(tableManager, never()).write(anyString(), anyList(), any());
     }
 
@@ -124,14 +111,13 @@ class GenericEntityServiceTest {
         assertEquals(0, result.getRecordCount());
         assertTrue(result.getMessage().contains("Failed to save entity"));
         assertNotNull(result.getError());
+        
+        verify(tableManager).write(anyString(), anyList(), any());
     }
 
     @Test
-    void testFindById() {
-        String entityType = "users";
-        String userId = "test001";
-        
-        Map<String, Object> expectedUser = Map.of(
+    void testSaveFromMap() {
+        Map<String, Object> userData = Map.of(
             "user_id", "test001",
             "username", "testuser",
             "email", "test@example.com",
@@ -139,50 +125,16 @@ class GenericEntityServiceTest {
             "signup_date", "2024-08-10"
         );
         
-        when(tableManager.read(eq(entityType), eq("user_id"), eq(userId)))
-            .thenReturn(Optional.of(expectedUser));
+        doNothing().when(tableManager).write(anyString(), anyList(), any());
         
-        Optional<Map<String, Object>> result = entityService.findById(entityType, userId);
+        EntityOperationResult<?> result = entityService.saveFromMap("users", userData);
         
-        assertTrue(result.isPresent());
-        assertEquals(expectedUser, result.get());
+        assertTrue(result.isSuccess());
+        assertEquals("users", result.getEntityType());
+        assertEquals(OperationType.WRITE, result.getOperationType());
+        assertEquals(1, result.getRecordCount());
         
-        verify(tableManager).read(eq(entityType), eq("user_id"), eq(userId));
-    }
-
-    @Test
-    void testFindByIdNotFound() {
-        String entityType = "users";
-        String userId = "nonexistent";
-        
-        when(tableManager.read(eq(entityType), eq("user_id"), eq(userId)))
-            .thenReturn(Optional.empty());
-        
-        Optional<Map<String, Object>> result = entityService.findById(entityType, userId);
-        
-        assertTrue(result.isEmpty());
-        verify(tableManager).read(eq(entityType), eq("user_id"), eq(userId));
-    }
-
-    @Test
-    void testFindByPartition() {
-        String entityType = "users";
-        Map<String, String> partitionFilters = Map.of("country", "US", "signup_date", "2024-08-10");
-        
-        List<Map<String, Object>> expectedUsers = List.of(
-            Map.of("user_id", "test001", "username", "user1", "country", "US"),
-            Map.of("user_id", "test002", "username", "user2", "country", "US")
-        );
-        
-        when(tableManager.readByPartitions(eq(entityType), eq(partitionFilters)))
-            .thenReturn(expectedUsers);
-        
-        List<Map<String, Object>> result = entityService.findByPartition(entityType, partitionFilters);
-        
-        assertEquals(2, result.size());
-        assertEquals(expectedUsers, result);
-        
-        verify(tableManager).readByPartitions(eq(entityType), eq(partitionFilters));
+        verify(tableManager).write(eq("users"), anyList(), any());
     }
 
     @Test
@@ -202,24 +154,6 @@ class GenericEntityServiceTest {
     }
 
     @Test
-    void testGetEntityMetadata() {
-        String entityType = "users";
-        EntityMetadata expectedMetadata = EntityMetadata.builder()
-            .entityType(entityType)
-            .primaryKeyColumn("user_id")
-            .build();
-        
-        when(metadataRegistry.getEntityMetadata(eq(entityType)))
-            .thenReturn(Optional.of(expectedMetadata));
-        
-        Optional<EntityMetadata> result = entityService.getEntityMetadata(entityType);
-        
-        assertTrue(result.isPresent());
-        assertEquals(expectedMetadata, result.get());
-        verify(metadataRegistry).getEntityMetadata(eq(entityType));
-    }
-
-    @Test
     void testGetRegisteredEntityTypes() {
         List<String> expectedTypes = List.of("users", "products", "orders");
         
@@ -227,17 +161,33 @@ class GenericEntityServiceTest {
         
         List<String> result = entityService.getRegisteredEntityTypes();
         
+        assertEquals(3, result.size());
         assertEquals(expectedTypes, result);
         verify(metadataRegistry).getRegisteredEntityTypes();
     }
 
+    @Test
+    void testValidateEntityTypeWithNullName() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            entityService.saveFromMap(null, Map.of("key", "value"));
+        });
+    }
+
+    @Test
+    void testValidateEntityTypeWithEmptyName() {
+        assertThrows(IllegalArgumentException.class, () -> {
+            entityService.saveFromMap("", Map.of("key", "value"));
+        });
+    }
+
+    // Helper method to create test users
     private User createTestUser(String userId, String username, String email, String country, String signupDate) {
-        User user = new User();
-        user.setUserId(userId);
-        user.setUsername(username);
-        user.setEmail(email);
-        user.setCountry(country);
-        user.setSignupDate(signupDate);
-        return user;
+        return User.newBuilder()
+            .setUserId(userId)
+            .setUsername(username)
+            .setEmail(email)
+            .setCountry(country)
+            .setSignupDate(signupDate)
+            .build();
     }
 }

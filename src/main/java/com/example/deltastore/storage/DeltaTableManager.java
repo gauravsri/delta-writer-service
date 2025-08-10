@@ -4,12 +4,12 @@ import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 
 import java.util.List;
-import java.util.Map;
-import java.util.Optional;
 
 /**
- * Manages operations on a Delta Lake table, abstracting the low-level
+ * Manages write operations on a Delta Lake table, abstracting the low-level
  * interactions with the Delta Kernel and Parquet files.
+ * 
+ * This service is focused on write-only operations using Delta Kernel APIs.
  */
 public interface DeltaTableManager {
 
@@ -23,23 +23,4 @@ public interface DeltaTableManager {
      * @param schema    The Avro schema for the records.
      */
     void write(String tableName, List<GenericRecord> records, Schema schema);
-
-    /**
-     * Reads a single record from the Delta table by its primary key.
-     *
-     * @param tableName The name of the table.
-     * @param primaryKeyColumn The name of the primary key column.
-     * @param primaryKeyValue The value of the primary key to find.
-     * @return An Optional containing the found record as a Map, or empty if not found.
-     */
-    Optional<Map<String, Object>> read(String tableName, String primaryKeyColumn, String primaryKeyValue);
-
-    /**
-     * Reads all records from a table that match the given partition filters.
-     *
-     * @param tableName The name of the table.
-     * @param partitionFilters A map of partition column names to their desired values.
-     * @return A list of records that match the partition filters.
-     */
-    List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters);
 }

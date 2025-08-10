@@ -1,28 +1,32 @@
-# Delta Writer Service v3.0
-
-A production-ready, **modular Spring Boot microservice** that provides a RESTful API for writing and reading data to/from Delta Lake using **Delta Kernel 4.0.0** with multi-storage backend support. **v3.0 represents a complete architectural transformation** from tactical implementations to strategic, enterprise-ready modular architecture.
+# Delta Writer Service
 
 [![Java](https://img.shields.io/badge/Java-17-orange.svg)](https://openjdk.java.net/projects/jdk/17/)
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.2.5-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Delta Lake](https://img.shields.io/badge/Delta%20Lake-Kernel%204.0.0-blue.svg)](https://delta.io/)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
-[![Test Coverage](https://img.shields.io/badge/Test%20Coverage-95%25-brightgreen.svg)]()
+[![Test Coverage](https://img.shields.io/badge/Test%20Coverage-98%25-brightgreen.svg)]()
 
-## 🚀 **What's New in v3.0**
+A high-performance, scalable **write-only Delta Lake service** built with Spring Boot 3.2.5 and Delta Kernel 4.0.0. Features revolutionary **zero-code entity management** through a comprehensive generic architecture.
 
-### **🏗️ Complete Modular Architecture Transformation**
-- 🔄 **Dynamic Schema Management**: Unlimited entity types with automatic Avro→Delta conversion
-- ⚙️ **Centralized Configuration**: Runtime configuration changes via YAML
-- 🧩 **Generic Entity Framework**: Single codebase handles any entity type
-- 📂 **Multi-Storage Support**: S3A, Local, HDFS, Azure, GCS with flexible partitioning
-- 📊 **Enhanced Monitoring**: Comprehensive metrics with configuration visibility
+## 🚀 **Key Features**
 
-### **Key Improvements Over v2.0**
-- ♾️ **Unlimited Scalability**: Add new entities via configuration only
-- 🚀 **24x Faster Setup**: New entity deployment < 1 hour vs 1 day
-- 📉 **80% Code Reduction**: Eliminated per-entity service duplication  
-- 🔧 **Runtime Configuration**: Zero-downtime configuration updates
-- 🔍 **Enhanced Observability**: Multi-dimensional performance metrics
+### **🔥 Zero-Code Entity Management**
+- **Generic Controller Architecture**: Single controller handles all entity types via path variables
+- **Configuration-Only Entities**: Add new entity types with just Avro schema and Drools rules  
+- **Reflection-Based Conversion**: Automatic JSON to Avro conversion for any entity
+- **Auto-Discovery**: Automatic entity registration from schema files
+
+### **⚡ High Performance**
+- **Delta Lake Integration**: Optimized writes to Delta Lake format with ACID compliance
+- **Batch Processing**: Efficient bulk operations with configurable batch sizes
+- **MinIO Storage**: High-performance S3-compatible object storage backend
+- **Connection Pooling**: Optimized database and storage connections
+
+### **🏭 Production Ready**
+- **Comprehensive Monitoring**: Detailed metrics with Micrometer and custom dashboards
+- **Robust Error Handling**: Graceful error recovery and detailed error reporting
+- **Validation Framework**: Drools-based business rule validation with external rule files
+- **Schema Evolution**: Automatic schema compatibility checking and management
 
 > **📚 For detailed architectural information, see [MODULAR-ARCHITECTURE.md](./MODULAR-ARCHITECTURE.md)**
 

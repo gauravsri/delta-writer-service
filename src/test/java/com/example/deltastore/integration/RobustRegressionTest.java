@@ -1,6 +1,6 @@
 package com.example.deltastore.integration;
 
-import com.example.deltastore.api.dto.BatchCreateRequest;
+import com.example.deltastore.api.dto.GenericBatchCreateRequest;
 import com.example.deltastore.api.dto.BatchCreateResponse;
 import com.example.deltastore.schemas.User;
 import lombok.extern.slf4j.Slf4j;
@@ -171,12 +171,12 @@ public class RobustRegressionTest {
     private BatchCreateResponse executeBatchWrite(List<User> users, String batchDescription) {
         log.info("Writing {} users for {}", users.size(), batchDescription);
         
-        BatchCreateRequest request = new BatchCreateRequest();
-        request.setUsers(users);
+        GenericBatchCreateRequest<User> request = new GenericBatchCreateRequest<>();
+        request.setEntities(users);
         
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        HttpEntity<BatchCreateRequest> entity = new HttpEntity<>(request, headers);
+        HttpEntity<GenericBatchCreateRequest<User>> entity = new HttpEntity<>(request, headers);
         
         ResponseEntity<BatchCreateResponse> response = restTemplate.postForEntity(
             "/api/v1/users/batch", entity, BatchCreateResponse.class);

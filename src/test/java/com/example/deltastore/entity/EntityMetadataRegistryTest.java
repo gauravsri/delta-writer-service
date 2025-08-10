@@ -1,5 +1,7 @@
 package com.example.deltastore.entity;
 
+import com.example.deltastore.entity.EntityMetadata;
+import com.example.deltastore.entity.EntityMetadataRegistry;
 import com.example.deltastore.schemas.User;
 import org.apache.avro.Schema;
 import org.junit.jupiter.api.BeforeEach;
@@ -251,7 +253,7 @@ class EntityMetadataRegistryTest {
         Map<String, Object> initialStats = registry.getRegistryStats();
         assertEquals(0, initialStats.get("total_registered"));
         assertEquals(0L, initialStats.get("active_entities"));
-        assertEquals(0, initialStats.get("inactive_entities"));
+        assertEquals(0L, initialStats.get("inactive_entities"));
 
         // Register entities
         EntityMetadata users = EntityMetadata.builder()

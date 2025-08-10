@@ -1,7 +1,6 @@
 package com.example.deltastore.entity;
 
 import com.example.deltastore.config.DeltaStoreConfiguration;
-import com.example.deltastore.schema.DeltaSchemaManager;
 import com.example.deltastore.storage.DeltaTableManager;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -11,7 +10,6 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Collections;
 
 /**
@@ -23,31 +21,61 @@ import java.util.Collections;
 public class GenericEntityService {
     
     private final DeltaTableManager tableManager;
-    private final DeltaSchemaManager schemaManager;
     private final DeltaStoreConfiguration config;
     private final EntityMetadataRegistry metadataRegistry;
     
     public GenericEntityService(
             @Qualifier("optimized") DeltaTableManager tableManager,
-            DeltaSchemaManager schemaManager,
             DeltaStoreConfiguration config,
             EntityMetadataRegistry metadataRegistry) {
         this.tableManager = tableManager;
-        this.schemaManager = schemaManager;
         this.config = config;
         this.metadataRegistry = metadataRegistry;
     }
     
     /**
-     * Saves an entity (create or update)
+     * Saves an entity from Map data (for REST API)
+     */
+    public EntityOperationResult<?> saveFromMap(String entityType, Map<String, Object> entityData) {
+        try {
+            validateEntityType(entityType);
+            
+            // Convert Map to GenericRecord using schema inference or registry
+            GenericRecord record = convertMapToGenericRecord(entityType, entityData);
+            
+            return saveRecord(entityType, record);
+            
+        } catch (IllegalArgumentException e) {
+            // Re-throw validation exceptions for proper error handling
+            throw e;
+        } catch (Exception e) {
+            log.error("Failed to save entity from map data for type: {}", entityType, e);
+            return EntityOperationResult.builder()
+                .success(false)
+                .entityType(entityType)
+                .operationType(OperationType.WRITE)
+                .recordCount(0)
+                .message("Failed to save entity: " + e.getMessage())
+                .error(e)
+                .build();
+        }
+    }
+    
+    /**
+     * Saves an entity (create or update) - for typed GenericRecord entities
      */
     public <T extends GenericRecord> EntityOperationResult<T> save(String entityType, T entity) {
+        return saveRecord(entityType, entity);
+    }
+    
+    /**
+     * Saves an entity (create or update) - internal implementation
+     */
+    private <T extends GenericRecord> EntityOperationResult<T> saveRecord(String entityType, T entity) {
         try {
             validateEntityType(entityType);
             Schema avroSchema = entity.getSchema();
             
-            // Get table configuration
-            DeltaStoreConfiguration.TableConfig tableConfig = config.getTableConfigOrDefault(entityType);
             
             // Validate schema if enabled
             if (config.getSchema().isEnableSchemaValidation()) {
@@ -138,41 +166,7 @@ public class GenericEntityService {
         }
     }
     
-    /**
-     * Finds entity by primary key
-     */
-    public Optional<Map<String, Object>> findById(String entityType, String id) {
-        try {
-            validateEntityType(entityType);
-            
-            DeltaStoreConfiguration.TableConfig tableConfig = config.getTableConfigOrDefault(entityType);
-            String primaryKey = tableConfig.getPrimaryKeyColumn();
-            
-            if (primaryKey == null || primaryKey.isEmpty()) {
-                log.warn("No primary key configured for entity type: {}", entityType);
-                return Optional.empty();
-            }
-            
-            return tableManager.read(entityType, primaryKey, id);
-            
-        } catch (Exception e) {
-            log.error("Failed to find entity by id for type: {}", entityType, e);
-            return Optional.empty();
-        }
-    }
     
-    /**
-     * Finds entities by partition filters
-     */
-    public List<Map<String, Object>> findByPartition(String entityType, Map<String, String> partitionFilters) {
-        try {
-            validateEntityType(entityType);
-            return tableManager.readByPartitions(entityType, partitionFilters);
-        } catch (Exception e) {
-            log.error("Failed to find entities by partition for type: {}", entityType, e);
-            return Collections.emptyList();
-        }
-    }
     
     /**
      * Registers a new entity type dynamically
@@ -182,12 +176,6 @@ public class GenericEntityService {
         log.info("Registered new entity type: {}", entityType);
     }
     
-    /**
-     * Gets entity metadata
-     */
-    public Optional<EntityMetadata> getEntityMetadata(String entityType) {
-        return metadataRegistry.getEntityMetadata(entityType);
-    }
     
     /**
      * Lists all registered entity types
@@ -214,19 +202,75 @@ public class GenericEntityService {
     }
     
     /**
+     * Converts Map data to GenericRecord for the specified entity type
+     */
+    private GenericRecord convertMapToGenericRecord(String entityType, Map<String, Object> data) {
+        // Create schema dynamically from data
+        Schema schema = createSchemaFromMap(entityType, data);
+        
+        // Register the schema if auto-registration is enabled
+        if (config.getSchema().isAutoRegisterSchemas()) {
+            EntityMetadata metadata = EntityMetadata.builder()
+                .entityType(entityType)
+                .schema(schema)
+                .build();
+            metadataRegistry.registerEntity(entityType, metadata);
+        }
+        
+        // Convert Map to GenericRecord using Avro's GenericRecordBuilder
+        org.apache.avro.generic.GenericRecordBuilder builder = new org.apache.avro.generic.GenericRecordBuilder(schema);
+        
+        for (Schema.Field field : schema.getFields()) {
+            String fieldName = field.name();
+            Object value = data.get(fieldName);
+            builder.set(fieldName, value);
+        }
+        
+        return builder.build();
+    }
+    
+    /**
+     * Creates an Avro schema from Map data structure
+     */
+    private Schema createSchemaFromMap(String entityType, Map<String, Object> data) {
+        org.apache.avro.SchemaBuilder.RecordBuilder<Schema> builder = 
+            org.apache.avro.SchemaBuilder.record(entityType).namespace("com.example.deltastore.schemas");
+        
+        org.apache.avro.SchemaBuilder.FieldAssembler<Schema> fields = builder.fields();
+        
+        for (Map.Entry<String, Object> entry : data.entrySet()) {
+            String fieldName = entry.getKey();
+            Object value = entry.getValue();
+            
+            if (value == null) {
+                fields = fields.name(fieldName).type().nullable().stringType().noDefault();
+            } else if (value instanceof String) {
+                fields = fields.name(fieldName).type().stringType().noDefault();
+            } else if (value instanceof Integer) {
+                fields = fields.name(fieldName).type().intType().noDefault();
+            } else if (value instanceof Long) {
+                fields = fields.name(fieldName).type().longType().noDefault();
+            } else if (value instanceof Double) {
+                fields = fields.name(fieldName).type().doubleType().noDefault();
+            } else if (value instanceof Float) {
+                fields = fields.name(fieldName).type().floatType().noDefault();
+            } else if (value instanceof Boolean) {
+                fields = fields.name(fieldName).type().booleanType().noDefault();
+            } else {
+                // Default to string for unknown types
+                fields = fields.name(fieldName).type().stringType().noDefault();
+            }
+        }
+        
+        return fields.endRecord();
+    }
+    
+    /**
      * Validates schema compatibility for evolution
      */
     private void validateSchemaCompatibility(String entityType, Schema newSchema) {
-        Optional<Schema> existingSchema = metadataRegistry.getEntitySchema(entityType);
-        
-        if (existingSchema.isPresent()) {
-            boolean compatible = schemaManager.isSchemaCompatible(existingSchema.get(), newSchema);
-            if (!compatible) {
-                throw new IllegalArgumentException(
-                    "Schema is not compatible with existing schema for entity type: " + entityType);
-            }
-        } else if (config.getSchema().isAutoRegisterSchemas()) {
-            // Auto-register schema
+        // For write-only operations, just auto-register schemas if enabled
+        if (config.getSchema().isAutoRegisterSchemas()) {
             EntityMetadata metadata = EntityMetadata.builder()
                 .entityType(entityType)
                 .schema(newSchema)

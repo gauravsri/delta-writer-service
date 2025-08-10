@@ -1,33 +1,21 @@
 package com.example.deltastore.storage;
 
 import io.delta.kernel.Table;
-import io.delta.kernel.Snapshot;
 import io.delta.kernel.engine.Engine;
-import io.delta.kernel.Scan;
 import io.delta.kernel.Transaction;
 import io.delta.kernel.TransactionBuilder;
 import io.delta.kernel.TransactionCommitResult;
 import io.delta.kernel.Operation;
 import io.delta.kernel.defaults.engine.DefaultEngine;
-import io.delta.kernel.data.ColumnarBatch;
 import io.delta.kernel.data.FilteredColumnarBatch;
 import io.delta.kernel.data.Row;
 import io.delta.kernel.types.StructType;
-import io.delta.kernel.expressions.Predicate;
-import io.delta.kernel.expressions.Column;
-import io.delta.kernel.expressions.Literal;
-import io.delta.kernel.expressions.And;
 import io.delta.kernel.utils.CloseableIterator;
-import io.delta.kernel.utils.FileStatus;
-import io.delta.kernel.internal.InternalScanFileUtils;
-import io.delta.kernel.internal.data.ScanStateRow;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
 import com.example.deltastore.config.StorageProperties;
-import com.example.deltastore.exception.TableReadException;
 import com.example.deltastore.exception.TableWriteException;
-import com.example.deltastore.util.DataTypeConverter;
 import com.example.deltastore.util.DeltaKernelBatchOperations;
 import io.delta.kernel.DataWriteContext;
 import lombok.extern.slf4j.Slf4j;
@@ -37,7 +25,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.HashMap;
 
 @Service
@@ -45,13 +32,11 @@ import java.util.HashMap;
 public class DeltaTableManagerImpl implements DeltaTableManager {
 
     private final StorageProperties storageProperties;
-    private final DataTypeConverter dataTypeConverter;
     private Configuration hadoopConf;
     private final Engine engine;
 
-    public DeltaTableManagerImpl(StorageProperties storageProperties, DataTypeConverter dataTypeConverter) {
+    public DeltaTableManagerImpl(StorageProperties storageProperties) {
         this.storageProperties = storageProperties;
-        this.dataTypeConverter = dataTypeConverter;
         this.hadoopConf = new Configuration();
         
         log.info("Initializing Delta Table Manager for bucket: {}", storageProperties.getBucketName());
@@ -172,192 +157,7 @@ public class DeltaTableManagerImpl implements DeltaTableManager {
         }
     }
 
-    @Override
-    public Optional<Map<String, Object>> read(String tableName, String primaryKeyColumn, String primaryKeyValue) {
-        if (tableName == null || tableName.trim().isEmpty()) {
-            throw new IllegalArgumentException("Table name cannot be null or empty");
-        }
-        if (primaryKeyColumn == null || primaryKeyColumn.trim().isEmpty()) {
-            throw new IllegalArgumentException("Primary key column cannot be null or empty");
-        }
-        if (primaryKeyValue == null) {
-            throw new IllegalArgumentException("Primary key value cannot be null");
-        }
-        
-        log.debug("Reading from table: {} where {}={}", tableName, primaryKeyColumn, primaryKeyValue);
-        
-        // Determine path based on configuration
-        String tablePath = getTablePath(tableName);
-        
-        CloseableIterator<FilteredColumnarBatch> scanIterator = null;
-        try {
-            // Create table reference
-            Table table = Table.forPath(engine, tablePath);
-            
-            // Get latest snapshot
-            Snapshot snapshot = table.getLatestSnapshot(engine);
-            StructType schema = snapshot.getSchema();
-            
-            // Create scan with filter
-            Predicate filter = new Predicate(
-                "=",
-                new Column(primaryKeyColumn),
-                Literal.ofString(primaryKeyValue)
-            );
-            
-            Scan scan = snapshot.getScanBuilder()
-                .withFilter(filter)
-                .build();
-            
-            // Following kernel_help.md pattern for proper read operations
-            Row scanState = scan.getScanState(engine);
-            scanIterator = scan.getScanFiles(engine);
-            
-            while (scanIterator.hasNext()) {
-                FilteredColumnarBatch scanFileBatch = scanIterator.next();
-                
-                try (CloseableIterator<Row> scanFileRows = scanFileBatch.getRows()) {
-                    StructType physicalSchema = ScanStateRow.getPhysicalDataReadSchema(engine, scanState);
-                    
-                    while (scanFileRows.hasNext()) {
-                        Row scanFileRow = scanFileRows.next();
-                        FileStatus fileStatus = InternalScanFileUtils.getAddFileStatus(scanFileRow);
-                        
-                        // Read physical data using Delta Kernel's Parquet handler
-                        try (CloseableIterator<ColumnarBatch> physicalDataIter =
-                                engine.getParquetHandler().readParquetFiles(
-                                    createSingletonFileStatusIterator(fileStatus),
-                                    physicalSchema,
-                                    Optional.empty()
-                                )) {
-                            
-                            // Transform to logical data following kernel_help.md pattern
-                            try (CloseableIterator<FilteredColumnarBatch> logicalData =
-                                    Scan.transformPhysicalData(
-                                        engine, scanState, scanFileRow, physicalDataIter)) {
-                                
-                                while (logicalData.hasNext()) {
-                                    FilteredColumnarBatch batch = logicalData.next();
-                                    ColumnarBatch data = batch.getData();
-                                    
-                                    try (CloseableIterator<Row> rowIter = data.getRows()) {
-                                        while (rowIter.hasNext()) {
-                                            Row row = rowIter.next();
-                                            Map<String, Object> result = dataTypeConverter.rowToMap(row, schema);
-                                            
-                                            // Check if this row matches our filter criteria
-                                            Object fieldValue = result.get(primaryKeyColumn);
-                                            if (primaryKeyValue.equals(String.valueOf(fieldValue))) {
-                                                log.debug("Found matching record for {}={}: {}", primaryKeyColumn, primaryKeyValue, result);
-                                                return Optional.of(result);
-                                            }
-                                            log.debug("Skipping non-matching record: {}={} (expected: {})", 
-                                                primaryKeyColumn, fieldValue, primaryKeyValue);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-        } catch (IOException e) {
-            throw new TableReadException("Failed to read from Delta table: " + tableName, e);
-        } catch (Exception e) {
-            throw new TableReadException("Unexpected error reading from Delta table: " + tableName, e);
-        } finally {
-            if (scanIterator != null) {
-                try {
-                    scanIterator.close();
-                } catch (IOException e) {
-                    log.warn("Failed to close scan iterator for table: {}", tableName, e);
-                }
-            }
-        }
 
-        return Optional.empty();
-    }
-
-    @Override
-    public List<Map<String, Object>> readByPartitions(String tableName, Map<String, String> partitionFilters) {
-        if (tableName == null || tableName.trim().isEmpty()) {
-            throw new IllegalArgumentException("Table name cannot be null or empty");
-        }
-        
-        log.debug("Reading from table: {} with partition filters: {}", tableName, partitionFilters);
-        
-        // Determine path based on configuration
-        String tablePath = getTablePath(tableName);
-        
-        CloseableIterator<FilteredColumnarBatch> scanIterator = null;
-        try {
-            // Create table reference
-            Table table = Table.forPath(engine, tablePath);
-            
-            // Get latest snapshot
-            Snapshot snapshot = table.getLatestSnapshot(engine);
-            StructType schema = snapshot.getSchema();
-            
-            // Build scan with filters
-            var scanBuilder = snapshot.getScanBuilder();
-            
-            if (partitionFilters != null && !partitionFilters.isEmpty()) {
-                // Build compound filter for all partition conditions
-                Predicate combinedFilter = null;
-                for (Map.Entry<String, String> entry : partitionFilters.entrySet()) {
-                    Predicate filter = new Predicate(
-                        "=",
-                        new Column(entry.getKey()),
-                        Literal.ofString(entry.getValue())
-                    );
-                    
-                    if (combinedFilter == null) {
-                        combinedFilter = filter;
-                    } else {
-                        combinedFilter = new And(combinedFilter, filter);
-                    }
-                }
-                
-                if (combinedFilter != null) {
-                    scanBuilder = scanBuilder.withFilter(combinedFilter);
-                }
-            }
-            
-            Scan scan = scanBuilder.build();
-            scanIterator = scan.getScanFiles(engine);
-            
-            List<Map<String, Object>> results = new ArrayList<>();
-            
-            while (scanIterator.hasNext()) {
-                FilteredColumnarBatch filteredBatch = scanIterator.next();
-                ColumnarBatch batch = filteredBatch.getData();
-                CloseableIterator<Row> rowIter = batch.getRows();
-                
-                while (rowIter.hasNext()) {
-                    Row row = rowIter.next();
-                    Map<String, Object> result = dataTypeConverter.rowToMap(row, schema);
-                    results.add(result);
-                }
-                rowIter.close();
-            }
-            
-            return results;
-            
-        } catch (IOException e) {
-            throw new TableReadException("Failed to read from Delta table by partition: " + tableName, e);
-        } catch (Exception e) {
-            throw new TableReadException("Unexpected error reading from Delta table by partition: " + tableName, e);
-        } finally {
-            if (scanIterator != null) {
-                try {
-                    scanIterator.close();
-                } catch (IOException e) {
-                    log.warn("Failed to close scan iterator for table: {}", tableName, e);
-                }
-            }
-        }
-    }
     
     /**
      * Check if a Delta table exists at the given path
@@ -500,32 +300,5 @@ public class DeltaTableManagerImpl implements DeltaTableManager {
         };
     }
     
-    /**
-     * Helper method to create CloseableIterator for a single FileStatus (following kernel_help.md pattern)
-     */
-    private CloseableIterator<FileStatus> createSingletonFileStatusIterator(FileStatus fileStatus) {
-        return new CloseableIterator<FileStatus>() {
-            private boolean hasNext = true;
-            
-            @Override
-            public boolean hasNext() {
-                return hasNext;
-            }
-            
-            @Override
-            public FileStatus next() {
-                if (!hasNext) {
-                    throw new java.util.NoSuchElementException();
-                }
-                hasNext = false;
-                return fileStatus;
-            }
-            
-            @Override
-            public void close() throws IOException {
-                // Nothing to close for singleton iterator
-            }
-        };
-    }
     
 }

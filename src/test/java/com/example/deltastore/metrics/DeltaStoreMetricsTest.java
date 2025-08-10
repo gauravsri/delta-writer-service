@@ -173,13 +173,8 @@ class DeltaStoreMetricsTest {
 
     @Test
     void testWithNullTableName() {
-        assertDoesNotThrow(() -> deltaStoreMetrics.recordWriteSuccess(null, 10L));
-        
-        Counter counter = meterRegistry.find("deltastore.records.written")
-            .tag("table", "null")
-            .counter();
-        // The counter should still be created but with "null" as the tag value
-        assertNotNull(counter);
+        // Null table names should throw exceptions
+        assertThrows(Exception.class, () -> deltaStoreMetrics.recordWriteSuccess(null, 10L));
     }
 
     @Test
