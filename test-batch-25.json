@@ -1,0 +1,29 @@
+{
+  "users": [
+    {"user_id": "batch25_1_1754824787", "username": "batch25user1", "email": "batch25_1@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_2_1754824787", "username": "batch25user2", "email": "batch25_2@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_3_1754824787", "username": "batch25user3", "email": "batch25_3@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_4_1754824787", "username": "batch25user4", "email": "batch25_4@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_5_1754824787", "username": "batch25user5", "email": "batch25_5@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_6_1754824787", "username": "batch25user6", "email": "batch25_6@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_7_1754824787", "username": "batch25user7", "email": "batch25_7@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_8_1754824787", "username": "batch25user8", "email": "batch25_8@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_9_1754824787", "username": "batch25user9", "email": "batch25_9@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_10_1754824787", "username": "batch25user10", "email": "batch25_10@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_11_1754824787", "username": "batch25user11", "email": "batch25_11@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_12_1754824787", "username": "batch25user12", "email": "batch25_12@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_13_1754824787", "username": "batch25user13", "email": "batch25_13@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_14_1754824787", "username": "batch25user14", "email": "batch25_14@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_15_1754824787", "username": "batch25user15", "email": "batch25_15@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_16_1754824787", "username": "batch25user16", "email": "batch25_16@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_17_1754824787", "username": "batch25user17", "email": "batch25_17@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_18_1754824787", "username": "batch25user18", "email": "batch25_18@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_19_1754824787", "username": "batch25user19", "email": "batch25_19@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_20_1754824787", "username": "batch25user20", "email": "batch25_20@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_21_1754824787", "username": "batch25user21", "email": "batch25_21@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_22_1754824787", "username": "batch25user22", "email": "batch25_22@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_23_1754824787", "username": "batch25user23", "email": "batch25_23@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_24_1754824787", "username": "batch25user24", "email": "batch25_24@test.com", "country": "US", "signup_date": "2024-01-01"},
+    {"user_id": "batch25_25_1754824787", "username": "batch25user25", "email": "batch25_25@test.com", "country": "US", "signup_date": "2024-01-01"}
+  ]
+}
