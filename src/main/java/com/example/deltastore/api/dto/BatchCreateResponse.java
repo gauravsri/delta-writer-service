@@ -25,6 +25,7 @@ public class BatchCreateResponse {
     
     private List<String> successfulUserIds;
     private List<FailureDetail> failures;
+    private List<String> errors; // For compatibility with error responses
     
     private LocalDateTime processedAt;
     private long processingTimeMs;
