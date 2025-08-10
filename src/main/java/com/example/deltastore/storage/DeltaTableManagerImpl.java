@@ -19,22 +19,21 @@ import io.delta.kernel.expressions.Literal;
 import io.delta.kernel.expressions.And;
 import io.delta.kernel.utils.CloseableIterator;
 import io.delta.kernel.data.ColumnVector;
+import io.delta.kernel.utils.FileStatus;
+import io.delta.kernel.internal.InternalScanFileUtils;
+import io.delta.kernel.internal.data.ScanStateRow;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.parquet.avro.AvroParquetWriter;
-import org.apache.parquet.hadoop.ParquetWriter;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 import com.example.deltastore.config.StorageProperties;
 import com.example.deltastore.exception.TableReadException;
 import com.example.deltastore.exception.TableWriteException;
 import com.example.deltastore.util.DataTypeConverter;
+import com.example.deltastore.util.DeltaKernelBatchOperations;
+import io.delta.kernel.DataWriteContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.apache.parquet.avro.AvroParquetWriter;
-import org.apache.parquet.hadoop.ParquetWriter;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -214,21 +213,57 @@ public class DeltaTableManagerImpl implements DeltaTableManager {
                 .withFilter(filter)
                 .build();
             
+            // Following kernel_help.md pattern for proper read operations
+            Row scanState = scan.getScanState(engine);
             scanIterator = scan.getScanFiles(engine);
             
             while (scanIterator.hasNext()) {
-                FilteredColumnarBatch filteredBatch = scanIterator.next();
-                ColumnarBatch batch = filteredBatch.getData();
-                CloseableIterator<Row> rowIter = batch.getRows();
+                FilteredColumnarBatch scanFileBatch = scanIterator.next();
                 
-                while (rowIter.hasNext()) {
-                    Row row = rowIter.next();
-                    Map<String, Object> result = dataTypeConverter.rowToMap(row, schema);
+                try (CloseableIterator<Row> scanFileRows = scanFileBatch.getRows()) {
+                    StructType physicalSchema = ScanStateRow.getPhysicalDataReadSchema(engine, scanState);
                     
-                    rowIter.close();
-                    return Optional.of(result);
+                    while (scanFileRows.hasNext()) {
+                        Row scanFileRow = scanFileRows.next();
+                        FileStatus fileStatus = InternalScanFileUtils.getAddFileStatus(scanFileRow);
+                        
+                        // Read physical data using Delta Kernel's Parquet handler
+                        try (CloseableIterator<ColumnarBatch> physicalDataIter =
+                                engine.getParquetHandler().readParquetFiles(
+                                    createSingletonFileStatusIterator(fileStatus),
+                                    physicalSchema,
+                                    Optional.empty()
+                                )) {
+                            
+                            // Transform to logical data following kernel_help.md pattern
+                            try (CloseableIterator<FilteredColumnarBatch> logicalData =
+                                    Scan.transformPhysicalData(
+                                        engine, scanState, scanFileRow, physicalDataIter)) {
+                                
+                                while (logicalData.hasNext()) {
+                                    FilteredColumnarBatch batch = logicalData.next();
+                                    ColumnarBatch data = batch.getData();
+                                    
+                                    try (CloseableIterator<Row> rowIter = data.getRows()) {
+                                        while (rowIter.hasNext()) {
+                                            Row row = rowIter.next();
+                                            Map<String, Object> result = dataTypeConverter.rowToMap(row, schema);
+                                            
+                                            // Check if this row matches our filter criteria
+                                            Object fieldValue = result.get(primaryKeyColumn);
+                                            if (primaryKeyValue.equals(String.valueOf(fieldValue))) {
+                                                log.debug("Found matching record for {}={}: {}", primaryKeyColumn, primaryKeyValue, result);
+                                                return Optional.of(result);
+                                            }
+                                            log.debug("Skipping non-matching record: {}={} (expected: {})", 
+                                                primaryKeyColumn, fieldValue, primaryKeyValue);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                rowIter.close();
             }
             
         } catch (IOException e) {
@@ -377,108 +412,124 @@ public class DeltaTableManagerImpl implements DeltaTableManager {
     }
     
     /**
-     * Write records using direct Parquet approach (working implementation)
+     * Write records using complete Delta Kernel approach following kernel_help.md
      */
     private void writeDeltaRecords(Transaction txn, Engine engine, List<GenericRecord> records, Schema schema) {
         try {
             Row txnState = txn.getTransactionState(engine);
             
             if (records.isEmpty()) {
-                // Create empty data actions for table creation only
                 io.delta.kernel.utils.CloseableIterable<Row> dataActions = 
                     io.delta.kernel.utils.CloseableIterable.emptyIterable();
-                
                 TransactionCommitResult result = txn.commit(engine, dataActions);
                 log.info("Delta transaction committed successfully at version: {} (empty)", result.getVersion());
                 return;
             }
             
-            log.info("Writing {} Avro records using direct Parquet approach", records.size());
+            log.info("Writing {} Avro records using complete Delta Kernel approach", records.size());
             
-            // TECH LEAD DECISION: Use direct Parquet writing + manual AddFile creation
-            // This provides a working solution while maintaining Delta Lake compatibility
+            // Step 1: Infer schema from Avro records
+            StructType deltaSchema = DeltaKernelBatchOperations.inferSchemaFromAvroRecords(records);
             
-            String tablePath = getTablePath("users");
+            // Step 2: Create FilteredColumnarBatch from Avro records (following kernel_help.md)
+            FilteredColumnarBatch recordBatch = DeltaKernelBatchOperations.createBatchFromAvroRecords(records, deltaSchema);
+            CloseableIterator<FilteredColumnarBatch> data = createCloseableIterator(
+                java.util.Collections.singletonList(recordBatch).iterator());
             
-            // Generate data file name using Delta conventions
-            String dataFileName = String.format("part-%05d-%s-c000.snappy.parquet", 
-                0, java.util.UUID.randomUUID().toString());
+            // Step 3: Set partition values (empty for non-partitioned table)
+            Map<String, io.delta.kernel.expressions.Literal> partitionValues = new HashMap<>();
             
-            // Write Parquet file directly
-            org.apache.hadoop.fs.Path dataFilePath = new org.apache.hadoop.fs.Path(tablePath, dataFileName);
-            long fileSize = writeParquetFile(dataFilePath, records, schema);
+            // Step 4: Transform logical data to physical data (following kernel_help.md pattern)
+            CloseableIterator<FilteredColumnarBatch> physicalData = 
+                io.delta.kernel.Transaction.transformLogicalData(engine, txnState, data, partitionValues);
             
-            // Create manual AddFile action for Delta transaction
-            List<Row> addFileActions = createAddFileActions(dataFileName, fileSize);
+            // Step 5: Get write context (following kernel_help.md pattern)
+            DataWriteContext writeContext = 
+                io.delta.kernel.Transaction.getWriteContext(engine, txnState, partitionValues);
             
-            // Since AddFile actions are empty for now, commit empty transaction
+            // Step 6: Write Parquet files using Delta Kernel's handler (following kernel_help.md pattern)
+            CloseableIterator<io.delta.kernel.utils.DataFileStatus> dataFiles = engine.getParquetHandler()
+                .writeParquetFiles(
+                    writeContext.getTargetDirectory(),
+                    physicalData,
+                    writeContext.getStatisticsColumns()
+                );
+            
+            // Step 7: Generate AddFile actions properly (following kernel_help.md pattern)
+            CloseableIterator<Row> dataActions = io.delta.kernel.Transaction.generateAppendActions(
+                engine, txnState, dataFiles, writeContext);
+            
+            // Step 8: Convert to list and commit
+            List<Row> actionsList = new ArrayList<>();
+            while (dataActions.hasNext()) {
+                actionsList.add(dataActions.next());
+            }
+            dataActions.close();
+            
             io.delta.kernel.utils.CloseableIterable<Row> dataActionsIterable = 
-                io.delta.kernel.utils.CloseableIterable.emptyIterable();
+                io.delta.kernel.utils.CloseableIterable.inMemoryIterable(createCloseableIterator(actionsList.iterator()));
             
             TransactionCommitResult result = txn.commit(engine, dataActionsIterable);
             
-            log.info("✅ Delta transaction committed successfully at version: {} with {} records in Parquet file: {}", 
-                result.getVersion(), records.size(), dataFileName);
+            log.info("✅ Complete Delta Kernel write successful at version: {} with {} records", 
+                result.getVersion(), records.size());
             
         } catch (Exception e) {
-            log.error("Failed to write Delta records using proper Delta Kernel API", e);
-            throw new RuntimeException("Failed to write Delta records", e);
+            log.error("Failed to write records using complete Delta Kernel approach", e);
+            throw new RuntimeException("Failed to write Delta records using complete Delta Kernel approach", e);
         }
     }
     
+    
+    
     /**
-     * Write Parquet file directly to the filesystem
+     * Helper method to create CloseableIterator from any Iterator
      */
-    private long writeParquetFile(org.apache.hadoop.fs.Path dataFilePath, List<GenericRecord> records, Schema schema) throws Exception {
-        log.debug("Writing Parquet file to: {}", dataFilePath);
-        
-        org.apache.parquet.hadoop.ParquetWriter<GenericRecord> writer = null;
-        try {
-            writer = org.apache.parquet.avro.AvroParquetWriter.<GenericRecord>builder(dataFilePath)
-                    .withSchema(schema)
-                    .withConf(hadoopConf)
-                    .withCompressionCodec(org.apache.parquet.hadoop.metadata.CompressionCodecName.SNAPPY)
-                    .build();
-
-            for (GenericRecord record : records) {
-                writer.write(record);
+    private <T> CloseableIterator<T> createCloseableIterator(java.util.Iterator<T> iterator) {
+        return new CloseableIterator<T>() {
+            @Override
+            public boolean hasNext() {
+                return iterator.hasNext();
             }
             
-            writer.close();
-            writer = null;
+            @Override
+            public T next() {
+                return iterator.next();
+            }
             
-            // Get file size using the correct filesystem for the path
-            org.apache.hadoop.fs.FileSystem fs = dataFilePath.getFileSystem(hadoopConf);
-            long fileSize = fs.getFileStatus(dataFilePath).getLen();
+            @Override
+            public void close() throws IOException {
+                // Nothing to close for in-memory iterator
+            }
+        };
+    }
+    
+    /**
+     * Helper method to create CloseableIterator for a single FileStatus (following kernel_help.md pattern)
+     */
+    private CloseableIterator<FileStatus> createSingletonFileStatusIterator(FileStatus fileStatus) {
+        return new CloseableIterator<FileStatus>() {
+            private boolean hasNext = true;
             
-            log.debug("Successfully wrote Parquet file with {} records, size: {} bytes", records.size(), fileSize);
-            return fileSize;
+            @Override
+            public boolean hasNext() {
+                return hasNext;
+            }
             
-        } finally {
-            if (writer != null) {
-                try {
-                    writer.close();
-                } catch (Exception e) {
-                    log.warn("Failed to close Parquet writer", e);
+            @Override
+            public FileStatus next() {
+                if (!hasNext) {
+                    throw new java.util.NoSuchElementException();
                 }
+                hasNext = false;
+                return fileStatus;
             }
-        }
+            
+            @Override
+            public void close() throws IOException {
+                // Nothing to close for singleton iterator
+            }
+        };
     }
     
-    /**
-     * Create AddFile actions for Delta Lake transaction log
-     */
-    private List<Row> createAddFileActions(String fileName, long fileSize) {
-        // TECH LEAD NOTE: This is a simplified AddFile implementation
-        // In a production system, we'd need proper statistics, partition values, etc.
-        
-        log.debug("Creating AddFile action for: {} (size: {} bytes)", fileName, fileSize);
-        
-        // For now, return empty list - the Parquet file exists but Delta won't track it properly
-        // This is a known limitation that would need proper Delta Kernel Row implementation
-        List<Row> actions = new ArrayList<>();
-        
-        log.warn("AddFile action creation simplified - Delta Lake will detect files but may not have full metadata");
-        return actions;
-    }
 }

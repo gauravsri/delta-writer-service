@@ -1,6 +1,7 @@
 package com.example.deltastore.service;
 
 import com.example.deltastore.schemas.User;
+import com.example.deltastore.api.dto.BatchCreateResponse;
 
 import java.util.List;
 import java.util.Map;
@@ -30,4 +31,12 @@ public interface UserService {
      * @return A list of users that match the partition filters.
      */
     List<User> findByPartitions(Map<String, String> partitionFilters);
+
+    /**
+     * Saves multiple user records in a single optimized batch operation.
+     * This method is more efficient than multiple individual save operations.
+     * @param users The list of users to save
+     * @return BatchCreateResponse with statistics about the operation
+     */
+    BatchCreateResponse saveBatch(List<User> users);
 }

@@ -5,10 +5,16 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.PropertyNamingStrategies;
 import com.fasterxml.jackson.databind.module.SimpleModule;
 import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.core.JsonParser;
 import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.DeserializationContext;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
+import com.example.deltastore.schemas.User;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -25,6 +31,9 @@ public class JacksonConfig {
         
         // Disable writing dates as timestamps
         mapper.disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        
+        // Register Java Time Module for LocalDateTime support
+        mapper.registerModule(new JavaTimeModule());
         
         // Use snake_case property naming to match Avro field names
         mapper.setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE);
@@ -54,6 +63,22 @@ public class JacksonConfig {
                     }
                 }
                 gen.writeEndObject();
+            }
+        });
+        
+        // Add custom deserializer for User to handle JSON maps
+        avroModule.addDeserializer(User.class, new JsonDeserializer<User>() {
+            @Override
+            public User deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+                JsonNode node = p.getCodec().readTree(p);
+                return User.newBuilder()
+                    .setUserId(node.get("user_id") != null ? node.get("user_id").asText() : null)
+                    .setUsername(node.get("username") != null ? node.get("username").asText() : null)
+                    .setEmail(node.get("email") != null && !node.get("email").isNull() ? 
+                              node.get("email").asText() : null)
+                    .setCountry(node.get("country") != null ? node.get("country").asText() : null)
+                    .setSignupDate(node.get("signup_date") != null ? node.get("signup_date").asText() : null)
+                    .build();
             }
         });
         
