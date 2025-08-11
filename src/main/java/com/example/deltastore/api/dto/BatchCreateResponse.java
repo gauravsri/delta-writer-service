@@ -2,6 +2,7 @@ package com.example.deltastore.api.dto;
 
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.fasterxml.jackson.databind.annotation.JsonPOJOBuilder;
+import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Builder;
 import lombok.Data;
 
@@ -12,6 +13,7 @@ import java.util.Map;
 @Data
 @Builder
 @JsonDeserialize(builder = BatchCreateResponse.BatchCreateResponseBuilder.class)
+@Schema(description = "Response object for batch create operations containing success/failure counts and detailed statistics")
 public class BatchCreateResponse {
     
     @JsonPOJOBuilder(withPrefix = "")
@@ -19,8 +21,13 @@ public class BatchCreateResponse {
         // Lombok will generate the builder methods
     }
     
+    @Schema(description = "Total number of entities requested for creation", example = "100")
     private int totalRequested;
+    
+    @Schema(description = "Number of entities successfully created", example = "98")
     private int successCount;
+    
+    @Schema(description = "Number of entities that failed to be created", example = "2")
     private int failureCount;
     
     private List<String> successfulUserIds;

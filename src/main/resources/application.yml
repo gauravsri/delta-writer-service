@@ -7,6 +7,17 @@ spring:
   profiles:
     active: ${SPRING_PROFILES_ACTIVE:local}
 
+# OpenAPI Documentation Configuration
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    tryItOutEnabled: true
+    operationsSorter: method
+    tagsSorter: alpha
+    filter: true
+
 management:
   endpoints:
     web:

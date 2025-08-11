@@ -1,19 +1,24 @@
 package com.example.deltastore.storage;
 
+import com.example.deltastore.config.DeltaStoreConfiguration;
+import com.example.deltastore.config.StorageProperties;
+import com.example.deltastore.schema.DeltaSchemaManager;
+import io.delta.kernel.types.StructType;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.generic.GenericRecordBuilder;
+import org.apache.hadoop.conf.Configuration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.apache.avro.Schema;
-import org.apache.avro.generic.GenericRecord;
-import org.apache.avro.generic.GenericRecordBuilder;
+import org.springframework.test.util.ReflectionTestUtils;
 
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
+import java.util.*;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ScheduledExecutorService;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
@@ -22,196 +27,362 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class OptimizedDeltaTableManagerTest {
 
-    private Schema testSchema;
+    @Mock
+    private StorageProperties storageProperties;
     
+    @Mock
+    private DeltaStoreConfiguration config;
+    
+    @Mock
+    private DeltaStoreConfiguration.Performance performance;
+    
+    @Mock
+    private DeltaSchemaManager schemaManager;
+    
+    @Mock
+    private DeltaStoragePathResolver pathResolver;
+    
+    private OptimizedDeltaTableManager manager;
+    private Schema testSchema;
+    private GenericRecord testRecord;
+
     @BeforeEach
     void setUp() {
-        testSchema = Schema.parse("{\"type\":\"record\",\"name\":\"User\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"name\",\"type\":\"string\"}]}");
+        // Mock configuration chain - using lenient to avoid unnecessary stubbing errors
+        lenient().when(config.getPerformance()).thenReturn(performance);
+        lenient().when(performance.getCommitThreads()).thenReturn(2);
+        lenient().when(performance.getBatchTimeoutMs()).thenReturn(1000L);
+        lenient().when(performance.getConnectionPoolSize()).thenReturn(10);
+        lenient().when(performance.getMaxBatchSize()).thenReturn(100);
+        lenient().when(performance.getMaxRetries()).thenReturn(3);
+        lenient().when(performance.getCheckpointInterval()).thenReturn(10);
+        lenient().when(performance.getWriteTimeoutMs()).thenReturn(30000L);
+        
+        // Mock storage properties - using lenient to avoid unnecessary stubbing errors
+        lenient().when(storageProperties.getEndpoint()).thenReturn("http://localhost:9000");
+        lenient().when(storageProperties.getAccessKey()).thenReturn("minio");
+        lenient().when(storageProperties.getSecretKey()).thenReturn("minio123");
+        
+        manager = new OptimizedDeltaTableManager(storageProperties, config, schemaManager, pathResolver);
+        
+        // Create test schema and record
+        testSchema = Schema.parse("{\"type\":\"record\",\"name\":\"TestRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"int\"}]}");
+        testRecord = new GenericRecordBuilder(testSchema)
+                .set("id", "test123")
+                .set("value", 42)
+                .build();
     }
-    
+
     @Test
-    void testSchemaCreation() {
-        assertNotNull(testSchema);
-        assertEquals("User", testSchema.getName());
-        assertEquals(2, testSchema.getFields().size());
+    void testConstructor() {
+        assertNotNull(manager);
+        
+        // Verify executors are created
+        ScheduledExecutorService batchExecutor = (ScheduledExecutorService) ReflectionTestUtils.getField(manager, "batchExecutor");
+        ExecutorService commitExecutor = (ExecutorService) ReflectionTestUtils.getField(manager, "commitExecutor");
+        
+        assertNotNull(batchExecutor);
+        assertNotNull(commitExecutor);
+        
+        verify(config, atLeastOnce()).getPerformance();
+        verify(performance).getCommitThreads();
     }
-    
+
     @Test
-    void testGenericRecordCreation() {
-        GenericRecord record = new GenericRecordBuilder(testSchema)
-            .set("id", "user1")
-            .set("name", "John Doe")
-            .build();
+    void testCreateOptimizedHadoopConfig() throws Exception {
+        // Test is done via constructor - verify the configuration was created
+        Configuration hadoopConf = (Configuration) ReflectionTestUtils.getField(manager, "hadoopConf");
+        assertNotNull(hadoopConf);
         
-        assertNotNull(record);
-        assertEquals("user1", record.get("id"));
-        assertEquals("John Doe", record.get("name"));
+        // Test with S3 endpoint configuration
+        assertEquals("http://localhost:9000", hadoopConf.get("fs.s3a.endpoint"));
+        assertEquals("minio", hadoopConf.get("fs.s3a.access.key"));
+        assertEquals("minio123", hadoopConf.get("fs.s3a.secret.key"));
+        assertEquals("true", hadoopConf.get("fs.s3a.path.style.access"));
+        assertEquals("org.apache.hadoop.fs.s3a.S3AFileSystem", hadoopConf.get("fs.s3a.impl"));
+        assertEquals("false", hadoopConf.get("fs.s3a.connection.ssl.enabled"));
+        
+        // Test optimized Parquet settings
+        assertEquals("268435456", hadoopConf.get("parquet.block.size"));
+        assertEquals("8388608", hadoopConf.get("parquet.page.size"));
+        assertEquals("snappy", hadoopConf.get("parquet.compression"));
+        
+        // Test connection pool settings
+        assertEquals("10", hadoopConf.get("fs.s3a.connection.maximum"));
+        assertEquals("5", hadoopConf.get("fs.s3a.threads.max"));
+        assertEquals("2", hadoopConf.get("fs.s3a.threads.core"));
+        
+        // Test upload optimization settings
+        assertEquals("true", hadoopConf.get("fs.s3a.fast.upload"));
+        assertEquals("bytebuffer", hadoopConf.get("fs.s3a.fast.upload.buffer"));
+        assertEquals("16", hadoopConf.get("fs.s3a.fast.upload.active.blocks"));
+        assertEquals("64M", hadoopConf.get("fs.s3a.multipart.size"));
     }
-    
+
     @Test
-    void testEmptyRecordsList() {
-        List<GenericRecord> emptyRecords = Collections.emptyList();
-        assertTrue(emptyRecords.isEmpty());
-        assertEquals(0, emptyRecords.size());
+    void testCreateOptimizedHadoopConfigWithoutS3() {
+        // Test with no S3 endpoint
+        when(storageProperties.getEndpoint()).thenReturn(null);
+        
+        OptimizedDeltaTableManager localManager = new OptimizedDeltaTableManager(
+                storageProperties, config, schemaManager, pathResolver);
+        
+        Configuration hadoopConf = (Configuration) ReflectionTestUtils.getField(localManager, "hadoopConf");
+        assertEquals("file:///", hadoopConf.get("fs.default.name"));
+        assertEquals("file:///", hadoopConf.get("fs.defaultFS"));
     }
-    
+
     @Test
-    void testRecordBatchCreation() {
-        GenericRecord record1 = new GenericRecordBuilder(testSchema)
-            .set("id", "user1")
-            .set("name", "John Doe")
-            .build();
-        GenericRecord record2 = new GenericRecordBuilder(testSchema)
-            .set("id", "user2")
-            .set("name", "Jane Smith")
-            .build();
-        
-        List<GenericRecord> records = Arrays.asList(record1, record2);
-        
-        assertEquals(2, records.size());
-        assertEquals("user1", records.get(0).get("id"));
-        assertEquals("user2", records.get(1).get("id"));
+    void testWriteWithNullTableName() {
+        assertThrows(IllegalArgumentException.class, () -> 
+            manager.write(null, Collections.singletonList(testRecord), testSchema)
+        );
     }
-    
+
     @Test
-    void testNullValidation() {
-        String nullString = null;
-        GenericRecord nullRecord = null;
-        Schema nullSchema = null;
-        
-        assertNull(nullString);
-        assertNull(nullRecord);
-        assertNull(nullSchema);
+    void testWriteWithEmptyTableName() {
+        assertThrows(IllegalArgumentException.class, () -> 
+            manager.write("", Collections.singletonList(testRecord), testSchema)
+        );
     }
-    
+
     @Test
-    void testStringValidation() {
-        String empty = "";
-        String whitespace = "   ";
-        String valid = "users";
-        
-        assertTrue(empty.isEmpty());
-        assertTrue(whitespace.trim().isEmpty());
-        assertFalse(valid.isEmpty());
-        assertFalse(valid.trim().isEmpty());
+    void testWriteWithNullRecords() {
+        // Should return without error
+        assertDoesNotThrow(() -> manager.write("test", null, testSchema));
     }
-    
+
     @Test
-    void testRecordFieldAccess() {
-        GenericRecord record = new GenericRecordBuilder(testSchema)
-            .set("id", "user1")
-            .set("name", "John Doe")
-            .build();
-        
-        // Test field access
-        Object idValue = record.get("id");
-        Object nameValue = record.get("name");
-        Object nonExistentValue = record.get("nonexistent");
-        
-        assertNotNull(idValue);
-        assertNotNull(nameValue);
-        assertNull(nonExistentValue);
-        
-        assertEquals("user1", idValue.toString());
-        assertEquals("John Doe", nameValue.toString());
+    void testWriteWithEmptyRecords() {
+        // Should return without error
+        assertDoesNotThrow(() -> manager.write("test", Collections.emptyList(), testSchema));
     }
-    
+
     @Test
-    void testCompletableFutureCreation() {
-        CompletableFuture<String> future1 = CompletableFuture.completedFuture("test");
-        CompletableFuture<Void> future2 = CompletableFuture.completedFuture(null);
-        CompletableFuture<Integer> future3 = new CompletableFuture<>();
+    void testCalculateOptimalBatchSize() throws Exception {
+        // Test low queue load
+        BlockingQueue<?> writeQueue = (BlockingQueue<?>) ReflectionTestUtils.getField(manager, "writeQueue");
+        assertTrue(writeQueue.isEmpty());
         
-        assertTrue(future1.isDone());
-        assertTrue(future2.isDone());
-        assertFalse(future3.isDone());
+        // Invoke private method via reflection
+        Integer optimalSize = (Integer) ReflectionTestUtils.invokeMethod(manager, "calculateOptimalBatchSize");
         
-        assertEquals("test", future1.join());
-        assertNull(future2.join());
+        // With empty queue, should return half of max batch size (minimum 10)
+        assertEquals(50, optimalSize); // maxBatchSize (100) / 2
     }
-    
+
     @Test
-    void testConcurrentFutures() {
-        CompletableFuture<String> future1 = CompletableFuture.supplyAsync(() -> "result1");
-        CompletableFuture<String> future2 = CompletableFuture.supplyAsync(() -> "result2");
-        CompletableFuture<String> future3 = CompletableFuture.supplyAsync(() -> "result3");
+    void testShouldCreateCheckpoint() throws Exception {
+        // Test checkpoint logic via reflection
+        Boolean shouldCreate = (Boolean) ReflectionTestUtils.invokeMethod(manager, "shouldCreateCheckpoint", 10L);
+        assertTrue(shouldCreate); // version 10, interval 10 -> true
         
-        CompletableFuture<Void> allFutures = CompletableFuture.allOf(future1, future2, future3);
+        Boolean shouldNotCreate = (Boolean) ReflectionTestUtils.invokeMethod(manager, "shouldCreateCheckpoint", 5L);
+        assertFalse(shouldNotCreate); // version 5, interval 10 -> false
         
-        assertDoesNotThrow(() -> allFutures.get(5, TimeUnit.SECONDS));
-        assertTrue(future1.isDone());
-        assertTrue(future2.isDone());
-        assertTrue(future3.isDone());
+        Boolean shouldNotCreateZero = (Boolean) ReflectionTestUtils.invokeMethod(manager, "shouldCreateCheckpoint", 0L);
+        assertFalse(shouldNotCreateZero); // version 0 -> false
     }
-    
+
     @Test
-    void testExceptionHandling() {
-        // Test IllegalArgumentException
-        assertThrows(IllegalArgumentException.class, () -> {
-            throw new IllegalArgumentException("Test exception");
-        });
+    void testDoesTableExist() throws Exception {
+        // Test via reflection since it's a private method
+        Boolean existsTrue = (Boolean) ReflectionTestUtils.invokeMethod(manager, "doesTableExist", "/path/to/existing");
+        Boolean existsFalse = (Boolean) ReflectionTestUtils.invokeMethod(manager, "doesTableExist", "/path/to/nonexisting");
         
-        // Test RuntimeException
-        assertThrows(RuntimeException.class, () -> {
-            throw new RuntimeException("Test runtime exception");
-        });
+        // Both should be false in test environment (no actual Delta tables)
+        assertFalse(existsTrue);
+        assertFalse(existsFalse);
     }
-    
+
     @Test
-    void testNumericOperations() {
-        long count1 = 0L;
-        long count2 = 1L;
-        long count3 = 100L;
+    void testGetMetrics() {
+        Map<String, Object> metrics = manager.getMetrics();
         
-        assertTrue(count1 == 0);
-        assertTrue(count2 > 0);
-        assertTrue(count3 > count2);
+        assertNotNull(metrics);
+        assertTrue(metrics.containsKey("writes"));
+        assertTrue(metrics.containsKey("conflicts"));
+        assertTrue(metrics.containsKey("queue_size"));
+        assertTrue(metrics.containsKey("avg_write_latency_ms"));
+        assertTrue(metrics.containsKey("checkpoints_created"));
+        assertTrue(metrics.containsKey("batch_consolidations"));
+        assertTrue(metrics.containsKey("optimal_batch_size"));
+        assertTrue(metrics.containsKey("configured_batch_timeout_ms"));
+        assertTrue(metrics.containsKey("configured_max_batch_size"));
+        assertTrue(metrics.containsKey("configured_max_retries"));
+        assertTrue(metrics.containsKey("configured_checkpoint_interval"));
+        assertTrue(metrics.containsKey("s3a_optimizations_enabled"));
+        assertTrue(metrics.containsKey("parquet_block_size_mb"));
+        assertTrue(metrics.containsKey("connection_pool_size"));
         
-        assertEquals(0L, count1);
-        assertEquals(1L, count2);
-        assertEquals(100L, count3);
+        // Verify initial values
+        assertEquals(0L, metrics.get("writes"));
+        assertEquals(0L, metrics.get("conflicts"));
+        assertEquals(0L, metrics.get("queue_size"));
+        assertEquals(0L, metrics.get("avg_write_latency_ms"));
+        assertEquals(0L, metrics.get("checkpoints_created"));
+        assertEquals(0L, metrics.get("batch_consolidations"));
+        assertEquals(1000L, metrics.get("configured_batch_timeout_ms"));
+        assertEquals(100, metrics.get("configured_max_batch_size"));
+        assertEquals(3, metrics.get("configured_max_retries"));
+        assertEquals(10, metrics.get("configured_checkpoint_interval"));
+        assertEquals(true, metrics.get("s3a_optimizations_enabled"));
+        assertEquals(256, metrics.get("parquet_block_size_mb"));
+        assertEquals(10, metrics.get("connection_pool_size"));
     }
-    
+
     @Test
-    void testTimeOperations() {
-        long timeout1 = 1000L;
-        long timeout2 = 5000L;
+    void testGetMetricsWithSchemaManagerCacheStats() {
+        Map<String, Object> cacheStats = Map.of("hits", 10L, "misses", 2L);
+        when(schemaManager.getCacheStats()).thenReturn(cacheStats);
         
-        assertTrue(timeout2 > timeout1);
-        assertEquals(1000L, timeout1);
-        assertEquals(5000L, timeout2);
+        Map<String, Object> metrics = manager.getMetrics();
         
-        // Test TimeUnit conversion
-        long seconds = TimeUnit.MILLISECONDS.toSeconds(timeout2);
-        assertEquals(5L, seconds);
+        assertEquals(cacheStats, metrics.get("schema_cache_stats"));
+        verify(schemaManager).getCacheStats();
     }
-    
+
     @Test
-    void testCollectionOperations() {
-        List<String> list1 = Arrays.asList("item1", "item2", "item3");
-        List<String> list2 = Collections.emptyList();
-        List<String> list3 = Collections.singletonList("single");
-        
-        assertEquals(3, list1.size());
-        assertEquals(0, list2.size());
-        assertEquals(1, list3.size());
-        
-        assertTrue(list1.contains("item1"));
-        assertFalse(list2.contains("anything"));
-        assertTrue(list3.contains("single"));
+    void testInit() {
+        // init() is called in @PostConstruct, verify it was called during setup
+        ScheduledExecutorService batchExecutor = (ScheduledExecutorService) ReflectionTestUtils.getField(manager, "batchExecutor");
+        assertNotNull(batchExecutor);
+        assertFalse(batchExecutor.isShutdown());
     }
-    
+
     @Test
-    void testStringOperations() {
-        String path1 = "s3a://bucket/table";
-        String path2 = "http://localhost:9000";
-        String path3 = "test-bucket";
+    void testCleanup() throws Exception {
+        ScheduledExecutorService batchExecutor = (ScheduledExecutorService) ReflectionTestUtils.getField(manager, "batchExecutor");
+        ExecutorService commitExecutor = (ExecutorService) ReflectionTestUtils.getField(manager, "commitExecutor");
         
-        assertTrue(path1.startsWith("s3a://"));
-        assertTrue(path2.startsWith("http://"));
-        assertFalse(path3.contains("://"));
+        // Call cleanup
+        ReflectionTestUtils.invokeMethod(manager, "cleanup");
         
-        assertEquals("bucket", path1.split("/")[2]);
-        assertEquals("localhost", path2.split("/")[2].split(":")[0]);
+        // Executors should be shutdown
+        assertTrue(batchExecutor.isShutdown());
+        assertTrue(commitExecutor.isShutdown());
+    }
+
+    @Test
+    void testCreateCloseableIterator() throws Exception {
+        List<String> testData = Arrays.asList("item1", "item2", "item3");
+        Iterator<String> iterator = testData.iterator();
+        
+        // Test via reflection
+        Object closeableIterator = ReflectionTestUtils.invokeMethod(manager, "createCloseableIterator", iterator);
+        assertNotNull(closeableIterator);
+        
+        // Test the iterator functionality via reflection
+        Boolean hasNext = (Boolean) ReflectionTestUtils.invokeMethod(closeableIterator, "hasNext");
+        assertTrue(hasNext);
+        
+        String next = (String) ReflectionTestUtils.invokeMethod(closeableIterator, "next");
+        assertEquals("item1", next);
+        
+        // Test close method doesn't throw
+        assertDoesNotThrow(() -> ReflectionTestUtils.invokeMethod(closeableIterator, "close"));
+    }
+
+    @Test
+    void testWriteBatchClass() throws Exception {
+        List<GenericRecord> records = Arrays.asList(testRecord);
+        
+        // Create WriteBatch via reflection
+        Class<?> writeBatchClass = Class.forName("com.example.deltastore.storage.OptimizedDeltaTableManager$WriteBatch");
+        Object writeBatch = writeBatchClass.getDeclaredConstructor(String.class, List.class, Schema.class)
+                .newInstance("test_table", records, testSchema);
+        
+        assertNotNull(writeBatch);
+        assertEquals("test_table", ReflectionTestUtils.getField(writeBatch, "tableName"));
+        assertEquals(records, ReflectionTestUtils.getField(writeBatch, "records"));
+        assertEquals(testSchema, ReflectionTestUtils.getField(writeBatch, "schema"));
+        assertNotNull(ReflectionTestUtils.getField(writeBatch, "future"));
+    }
+
+    @Test
+    void testMetricsFieldsExist() {
+        // Verify atomic fields exist and are initialized
+        assertNotNull(ReflectionTestUtils.getField(manager, "writeCount"));
+        assertNotNull(ReflectionTestUtils.getField(manager, "conflictCount"));
+        assertNotNull(ReflectionTestUtils.getField(manager, "avgWriteLatency"));
+        assertNotNull(ReflectionTestUtils.getField(manager, "checkpointCount"));
+        assertNotNull(ReflectionTestUtils.getField(manager, "batchConsolidationCount"));
+    }
+
+    @Test
+    void testProcessBatchesWithEmptyQueue() throws Exception {
+        // Call processBatches when queue is empty
+        assertDoesNotThrow(() -> ReflectionTestUtils.invokeMethod(manager, "processBatches"));
+        
+        // Queue should still be empty
+        BlockingQueue<?> writeQueue = (BlockingQueue<?>) ReflectionTestUtils.getField(manager, "writeQueue");
+        assertTrue(writeQueue.isEmpty());
+    }
+
+    @Test
+    void testConfigurationDependencies() {
+        verify(storageProperties, atLeastOnce()).getEndpoint();
+        verify(storageProperties, atLeastOnce()).getAccessKey();
+        verify(storageProperties, atLeastOnce()).getSecretKey();
+        verify(performance, atLeastOnce()).getConnectionPoolSize();
+        verify(performance, atLeastOnce()).getCommitThreads();
+    }
+
+    @Test
+    void testOptimalBatchSizeWithHighLoad() throws Exception {
+        // Mock high queue load by adding items to queue
+        BlockingQueue<Object> writeQueue = (BlockingQueue<Object>) ReflectionTestUtils.getField(manager, "writeQueue");
+        
+        // Add more than 1000 items to trigger high load path
+        for (int i = 0; i < 1001; i++) {
+            writeQueue.offer(new Object());
+        }
+        
+        Integer optimalSize = (Integer) ReflectionTestUtils.invokeMethod(manager, "calculateOptimalBatchSize");
+        
+        // With high load (>1000), should return double the max batch size (capped at 10000)
+        assertEquals(200, optimalSize); // maxBatchSize (100) * 2
+    }
+
+    @Test
+    void testOptimalBatchSizeWithModerateLoad() throws Exception {
+        BlockingQueue<Object> writeQueue = (BlockingQueue<Object>) ReflectionTestUtils.getField(manager, "writeQueue");
+        
+        // Add moderate load (101-1000 items)
+        for (int i = 0; i < 150; i++) {
+            writeQueue.offer(new Object());
+        }
+        
+        Integer optimalSize = (Integer) ReflectionTestUtils.invokeMethod(manager, "calculateOptimalBatchSize");
+        
+        // With moderate load, should return configured batch size
+        assertEquals(100, optimalSize); // maxBatchSize (100)
+    }
+
+    @Test
+    void testHadoopConfigurationOptimizations() {
+        Configuration hadoopConf = (Configuration) ReflectionTestUtils.getField(manager, "hadoopConf");
+        
+        // Verify timeout settings
+        assertEquals("2000", hadoopConf.get("fs.s3a.connection.establish.timeout"));
+        assertEquals("60000", hadoopConf.get("fs.s3a.connection.timeout"));
+        assertEquals("60000", hadoopConf.get("fs.s3a.socket.timeout"));
+        assertEquals("60000", hadoopConf.get("fs.s3a.request.timeout"));
+        
+        // Verify retry settings
+        assertEquals("5", hadoopConf.get("fs.s3a.attempts.maximum"));
+        assertEquals("5", hadoopConf.get("fs.s3a.retry.limit"));
+        assertEquals("200ms", hadoopConf.get("fs.s3a.retry.interval"));
+        assertEquals("1.5", hadoopConf.get("fs.s3a.retry.exponential.base"));
+        
+        // Verify buffer and I/O settings
+        assertEquals("1048576", hadoopConf.get("fs.s3a.readahead.range"));
+        assertEquals("sequential", hadoopConf.get("fs.s3a.input.fadvise"));
+        assertEquals("true", hadoopConf.get("fs.s3a.prefetch.enabled"));
+        
+        // Verify performance optimizations
+        assertEquals("none", hadoopConf.get("fs.s3a.server.side.encryption.algorithm"));
+        assertEquals("2", hadoopConf.get("fs.s3a.list.version"));
+        assertEquals("delete", hadoopConf.get("fs.s3a.directory.marker.retention"));
     }
 }

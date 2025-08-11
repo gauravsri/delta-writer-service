@@ -5,6 +5,14 @@ import com.example.deltastore.api.dto.BatchCreateResponse;
 import com.example.deltastore.service.EntityService;
 import com.example.deltastore.validation.EntityValidator;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.generic.GenericRecord;
@@ -29,6 +37,7 @@ import java.util.ArrayList;
 @RequiredArgsConstructor
 @Slf4j
 @Profile("local")
+@Tag(name = "Generic Entity Operations", description = "Universal API for managing any entity type with zero-code configuration")
 public class GenericEntityController {
 
     private final EntityControllerRegistry controllerRegistry;
@@ -38,9 +47,22 @@ public class GenericEntityController {
      * Create a single entity
      * POST /api/v1/entities/{entityType}
      */
+    @Operation(
+            summary = "Create a single entity",
+            description = "Creates a single entity of the specified type. The entity data should match the Avro schema for the entity type."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "Entity created successfully"),
+            @ApiResponse(responseCode = "400", description = "Invalid request data or validation errors",
+                    content = @Content(mediaType = "application/json", 
+                            examples = @ExampleObject(value = "{\"error\": \"Entity type 'invalid' is not supported\"}"))),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
     @PostMapping("/{entityType}")
     public ResponseEntity<?> createEntity(
+            @Parameter(description = "The type of entity to create (e.g., users, orders, products)", example = "users")
             @PathVariable String entityType,
+            @Parameter(description = "Entity data as JSON object matching the entity's Avro schema")
             @RequestBody Map<String, Object> entityData) {
         
         log.info("Creating {} entity", entityType);
@@ -79,9 +101,23 @@ public class GenericEntityController {
      * Create multiple entities in batch
      * POST /api/v1/entities/{entityType}/batch
      */
+    @Operation(
+            summary = "Create multiple entities in batch",
+            description = "Creates multiple entities of the specified type in a single batch operation for improved performance. Supports up to 1000 entities per batch."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "201", description = "All entities created successfully",
+                    content = @Content(mediaType = "application/json", schema = @Schema(implementation = BatchCreateResponse.class))),
+            @ApiResponse(responseCode = "206", description = "Partial success - some entities failed",
+                    content = @Content(mediaType = "application/json", schema = @Schema(implementation = BatchCreateResponse.class))),
+            @ApiResponse(responseCode = "400", description = "Invalid request data or validation errors"),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
     @PostMapping("/{entityType}/batch")
     public ResponseEntity<?> createEntitiesBatch(
+            @Parameter(description = "The type of entity to create (e.g., users, orders, products)", example = "users")
             @PathVariable String entityType,
+            @Parameter(description = "Batch create request containing array of entities and optional processing options")
             @Valid @RequestBody GenericBatchCreateRequest<GenericRecord> request) {
         
         log.info("Creating batch of {} {} entities", 
@@ -153,6 +189,16 @@ public class GenericEntityController {
      * Get supported entity types
      * GET /api/v1/entities
      */
+    @Operation(
+            summary = "Get supported entity types",
+            description = "Returns a list of all entity types that are currently registered and available for operations."
+    )
+    @ApiResponses(value = {
+            @ApiResponse(responseCode = "200", description = "Successfully retrieved supported entity types",
+                    content = @Content(mediaType = "application/json",
+                            examples = @ExampleObject(value = "{\"supportedEntityTypes\": [\"users\", \"orders\", \"products\"], \"message\": \"Supported entity types for this API\"}"))),
+            @ApiResponse(responseCode = "500", description = "Internal server error")
+    })
     @GetMapping
     public ResponseEntity<?> getSupportedEntityTypes() {
         try {

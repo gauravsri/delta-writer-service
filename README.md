@@ -4,7 +4,7 @@
 [![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.2.5-brightgreen.svg)](https://spring.io/projects/spring-boot)
 [![Delta Lake](https://img.shields.io/badge/Delta%20Lake-Kernel%204.0.0-blue.svg)](https://delta.io/)
 [![Build Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)]()
-[![Test Coverage](https://img.shields.io/badge/Test%20Coverage-98%25-brightgreen.svg)]()
+[![Test Coverage](https://img.shields.io/badge/Test%20Coverage-62%25-yellow.svg)]()
 
 A high-performance, scalable **write-only Delta Lake service** built with Spring Boot 3.2.5 and Delta Kernel 4.0.0. Features revolutionary **zero-code entity management** through a comprehensive generic architecture.
 
@@ -118,6 +118,14 @@ docker-compose up --build
 ---
 
 ## 📝 **API Documentation**
+
+### **OpenAPI/Swagger Documentation**
+
+The service provides interactive OpenAPI 3.0 documentation for easy client integration:
+
+- **Swagger UI**: http://localhost:8080/swagger-ui.html
+- **OpenAPI JSON**: http://localhost:8080/v3/api-docs
+- **Comprehensive API Documentation**: [API_DOCUMENTATION.md](./API_DOCUMENTATION.md)
 
 ### **Universal Entity Operations**
 
