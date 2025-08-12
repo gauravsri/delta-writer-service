@@ -17,6 +17,7 @@ import org.apache.hadoop.conf.Configuration;
 import com.example.deltastore.config.StorageProperties;
 import com.example.deltastore.exception.TableWriteException;
 import com.example.deltastore.util.DeltaKernelBatchOperations;
+import com.example.deltastore.schema.DeltaSchemaManager;
 import io.delta.kernel.DataWriteContext;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,11 +33,13 @@ import java.util.HashMap;
 public class DeltaTableManagerImpl implements DeltaTableManager {
 
     private final StorageProperties storageProperties;
+    private final DeltaSchemaManager deltaSchemaManager;
     private Configuration hadoopConf;
     private final Engine engine;
 
-    public DeltaTableManagerImpl(StorageProperties storageProperties) {
+    public DeltaTableManagerImpl(StorageProperties storageProperties, DeltaSchemaManager deltaSchemaManager) {
         this.storageProperties = storageProperties;
+        this.deltaSchemaManager = deltaSchemaManager;
         this.hadoopConf = new Configuration();
         
         log.info("Initializing Delta Table Manager for bucket: {}", storageProperties.getBucketName());
@@ -194,17 +197,10 @@ public class DeltaTableManagerImpl implements DeltaTableManager {
     }
     
     /**
-     * Convert Avro Schema to Delta StructType
+     * Convert Avro Schema to Delta StructType using proper schema manager
      */
     private StructType convertAvroSchemaToDelta(Schema avroSchema) {
-        // For now, use a simple mapping - this would need proper conversion logic
-        // Based on the user schema: user_id, username, email, country, signup_date (all strings)
-        return new StructType()
-            .add("user_id", io.delta.kernel.types.StringType.STRING, false)
-            .add("username", io.delta.kernel.types.StringType.STRING, false) 
-            .add("email", io.delta.kernel.types.StringType.STRING, true)
-            .add("country", io.delta.kernel.types.StringType.STRING, false)
-            .add("signup_date", io.delta.kernel.types.StringType.STRING, false);
+        return deltaSchemaManager.getOrCreateDeltaSchema(avroSchema);
     }
     
     /**

@@ -3,6 +3,7 @@ package com.example.deltastore.storage;
 import com.example.deltastore.config.DeltaStoreConfiguration;
 import com.example.deltastore.config.StorageProperties;
 import com.example.deltastore.schema.DeltaSchemaManager;
+import com.example.deltastore.util.ResourceLeakTracker;
 import io.delta.kernel.types.StructType;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -23,6 +24,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import org.mockito.Mockito;
 
 @ExtendWith(MockitoExtension.class)
 class OptimizedDeltaTableManagerTest {
@@ -63,7 +65,8 @@ class OptimizedDeltaTableManagerTest {
         lenient().when(storageProperties.getAccessKey()).thenReturn("minio");
         lenient().when(storageProperties.getSecretKey()).thenReturn("minio123");
         
-        manager = new OptimizedDeltaTableManager(storageProperties, config, schemaManager, pathResolver);
+        ResourceLeakTracker resourceTracker = Mockito.mock(ResourceLeakTracker.class);
+        manager = new OptimizedDeltaTableManager(storageProperties, config, schemaManager, pathResolver, resourceTracker);
         
         // Create test schema and record
         testSchema = Schema.parse("{\"type\":\"record\",\"name\":\"TestRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"int\"}]}");
@@ -124,8 +127,9 @@ class OptimizedDeltaTableManagerTest {
         // Test with no S3 endpoint
         when(storageProperties.getEndpoint()).thenReturn(null);
         
+        ResourceLeakTracker localResourceTracker = Mockito.mock(ResourceLeakTracker.class);
         OptimizedDeltaTableManager localManager = new OptimizedDeltaTableManager(
-                storageProperties, config, schemaManager, pathResolver);
+                storageProperties, config, schemaManager, pathResolver, localResourceTracker);
         
         Configuration hadoopConf = (Configuration) ReflectionTestUtils.getField(localManager, "hadoopConf");
         assertEquals("file:///", hadoopConf.get("fs.default.name"));

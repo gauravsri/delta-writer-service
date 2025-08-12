@@ -21,6 +21,7 @@ import com.example.deltastore.config.DeltaStoreConfiguration;
 import com.example.deltastore.schema.DeltaSchemaManager;
 import com.example.deltastore.exception.TableWriteException;
 import com.example.deltastore.util.DeltaKernelBatchOperations;
+import com.example.deltastore.util.ResourceLeakTracker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Primary;
@@ -50,6 +51,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final DeltaStoreConfiguration config;
     private final DeltaSchemaManager schemaManager;
     private final DeltaStoragePathResolver pathResolver;
+    private final ResourceLeakTracker resourceTracker;
     private final Configuration hadoopConf;
     private final Engine engine;
     
@@ -100,11 +102,13 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     public OptimizedDeltaTableManager(StorageProperties storageProperties,
                                       DeltaStoreConfiguration config,
                                       DeltaSchemaManager schemaManager,
-                                      DeltaStoragePathResolver pathResolver) {
+                                      DeltaStoragePathResolver pathResolver,
+                                      ResourceLeakTracker resourceTracker) {
         this.storageProperties = storageProperties;
         this.config = config;
         this.schemaManager = schemaManager;
         this.pathResolver = pathResolver;
+        this.resourceTracker = resourceTracker;
         this.hadoopConf = createOptimizedHadoopConfig();
         this.engine = DefaultEngine.create(hadoopConf);
         
@@ -118,7 +122,12 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         // Start batch processor with configured timeout
         long batchTimeoutMs = config.getPerformance().getBatchTimeoutMs();
         batchExecutor.scheduleWithFixedDelay(this::processBatches, 0, batchTimeoutMs, TimeUnit.MILLISECONDS);
-        log.info("Write-only Delta Table Manager initialized with batching ({}ms)", batchTimeoutMs);
+        
+        // Start resource leak detection (every 5 minutes, detect resources older than 10 minutes)
+        batchExecutor.scheduleWithFixedDelay(() -> resourceTracker.detectLeaks(10), 
+            5, 5, TimeUnit.MINUTES);
+        
+        log.info("Write-only Delta Table Manager initialized with batching ({}ms) and leak detection", batchTimeoutMs);
     }
     
     @PreDestroy
@@ -895,6 +904,17 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         CloseableIterator<FilteredColumnarBatch> data = createCloseableIterator(
             Collections.singletonList(recordBatch).iterator());
         
+        // Generate unique resource IDs for tracking
+        String batchId = "batch_" + System.nanoTime();
+        String dataId = "data_" + System.nanoTime();
+        String physicalDataId = "physical_" + System.nanoTime();
+        String dataFilesId = "files_" + System.nanoTime();
+        String dataActionsId = "actions_" + System.nanoTime();
+        
+        // Track resource allocations
+        resourceTracker.trackResource(batchId, "FilteredColumnarBatch", "writeOptimizedDeltaRecords");
+        resourceTracker.trackResource(dataId, "CloseableIterator<FilteredColumnarBatch>", "writeOptimizedDeltaRecords");
+        
         // CRITICAL FIX: Use try-with-resources to ensure proper cleanup
         CloseableIterator<FilteredColumnarBatch> physicalData = null;
         CloseableIterator<io.delta.kernel.utils.DataFileStatus> dataFiles = null;
@@ -906,6 +926,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             
             // Transform and write
             physicalData = Transaction.transformLogicalData(engine, txnState, data, partitionValues);
+            resourceTracker.trackResource(physicalDataId, "CloseableIterator<FilteredColumnarBatch>", "transformLogicalData");
             
             DataWriteContext writeContext = 
                 Transaction.getWriteContext(engine, txnState, partitionValues);
@@ -915,8 +936,10 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 physicalData,
                 writeContext.getStatisticsColumns()
             );
+            resourceTracker.trackResource(dataFilesId, "CloseableIterator<DataFileStatus>", "writeParquetFiles");
             
             dataActions = Transaction.generateAppendActions(engine, txnState, dataFiles, writeContext);
+            resourceTracker.trackResource(dataActionsId, "CloseableIterator<Row>", "generateAppendActions");
             
             List<Row> actionsList = new ArrayList<>();
             while (dataActions.hasNext()) {
@@ -930,10 +953,11 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             return txn.commit(engine, dataActionsIterable);
             
         } finally {
-            // CRITICAL FIX: Ensure all iterators are properly closed
+            // CRITICAL FIX: Ensure all iterators are properly closed and tracked resources released
             if (dataActions != null) {
                 try {
                     dataActions.close();
+                    resourceTracker.releaseResource(dataActionsId);
                     log.trace("Closed dataActions iterator");
                 } catch (IOException e) {
                     log.warn("Error closing dataActions iterator: {}", e.getMessage());
@@ -943,6 +967,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             if (dataFiles != null) {
                 try {
                     dataFiles.close();
+                    resourceTracker.releaseResource(dataFilesId);
                     log.trace("Closed dataFiles iterator");
                 } catch (IOException e) {
                     log.warn("Error closing dataFiles iterator: {}", e.getMessage());
@@ -952,6 +977,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             if (physicalData != null) {
                 try {
                     physicalData.close();
+                    resourceTracker.releaseResource(physicalDataId);
                     log.trace("Closed physicalData iterator");
                 } catch (IOException e) {
                     log.warn("Error closing physicalData iterator: {}", e.getMessage());
@@ -961,6 +987,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             if (data != null) {
                 try {
                     data.close();
+                    resourceTracker.releaseResource(dataId);
                     log.trace("Closed data iterator");
                 } catch (IOException e) {
                     log.warn("Error closing data iterator: {}", e.getMessage());
@@ -978,6 +1005,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                     } else {
                         log.trace("Record batch does not implement AutoCloseable");
                     }
+                    resourceTracker.releaseResource(batchId);
                 } catch (Exception e) {
                     log.warn("Error closing record batch data: {}", e.getMessage());
                 }
