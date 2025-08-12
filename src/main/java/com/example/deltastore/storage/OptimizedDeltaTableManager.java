@@ -29,9 +29,11 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
 /**
  * Write-only Delta Table Manager focused on high-performance write operations using Delta Kernel APIs.
@@ -61,8 +63,15 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final AtomicLong avgWriteLatency = new AtomicLong();
     private final AtomicLong checkpointCount = new AtomicLong();
     private final AtomicLong batchConsolidationCount = new AtomicLong();
+    
+    // Checkpoint race condition prevention (NEW - High Priority Issue #5)
+    private final ConcurrentHashMap<String, Long> lastCheckpointVersion = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, CompletableFuture<Void>> pendingCheckpoints = new ConcurrentHashMap<>();
     private final AtomicLong backgroundRetryCount = new AtomicLong();
     private final AtomicLong backgroundFailureCount = new AtomicLong();
+    private final AtomicLong ioErrorCount = new AtomicLong();
+    private final AtomicLong runtimeErrorCount = new AtomicLong();
+    private final AtomicLong permanentErrorCount = new AtomicLong();
     
     // Constants for retry handling
     private static final int MAX_BACKGROUND_RETRIES = 3;
@@ -93,9 +102,9 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         this.hadoopConf = createOptimizedHadoopConfig();
         this.engine = DefaultEngine.create(hadoopConf);
         
-        // Initialize executors based on configuration
-        this.batchExecutor = Executors.newSingleThreadScheduledExecutor();
-        this.commitExecutor = Executors.newFixedThreadPool(config.getPerformance().getCommitThreads());
+        // Initialize executors with dynamic sizing based on system resources
+        this.batchExecutor = createOptimizedBatchExecutor();
+        this.commitExecutor = createOptimizedCommitExecutor();
     }
     
     @PostConstruct
@@ -108,18 +117,90 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     
     @PreDestroy
     public void cleanup() {
+        log.info("Shutting down Delta Table Manager thread pools...");
+        
         batchExecutor.shutdown();
         commitExecutor.shutdown();
+        
         try {
             if (!batchExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("Batch executor did not terminate gracefully, forcing shutdown");
                 batchExecutor.shutdownNow();
             }
             if (!commitExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                log.warn("Commit executor did not terminate gracefully, forcing shutdown");
                 commitExecutor.shutdownNow();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            log.warn("Interrupted while waiting for executor termination");
         }
+        
+        // Clean up checkpoint tracking (HIGH PRIORITY ISSUE #5)
+        int pendingCount = pendingCheckpoints.size();
+        if (pendingCount > 0) {
+            log.warn("Cancelling {} pending checkpoint operations during shutdown", pendingCount);
+            pendingCheckpoints.values().forEach(future -> future.cancel(true));
+            pendingCheckpoints.clear();
+        }
+        lastCheckpointVersion.clear();
+        
+        log.info("Delta Table Manager cleanup completed");
+    }
+    
+    /**
+     * Creates optimized batch executor with proper thread configuration
+     */
+    private ScheduledExecutorService createOptimizedBatchExecutor() {
+        // Single thread is sufficient for batch scheduling
+        return Executors.newSingleThreadScheduledExecutor(
+            new ThreadFactoryBuilder()
+                .setNameFormat("delta-batch-%d")
+                .setDaemon(false)
+                .setPriority(Thread.NORM_PRIORITY)
+                .setUncaughtExceptionHandler((thread, exception) -> {
+                    log.error("Uncaught exception in batch executor thread: {}", thread.getName(), exception);
+                })
+                .build()
+        );
+    }
+    
+    /**
+     * Creates optimized commit executor with dynamic sizing based on system resources
+     */
+    private ExecutorService createOptimizedCommitExecutor() {
+        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        int configuredThreads = config.getPerformance().getCommitThreads();
+        
+        // Calculate optimal thread count
+        int coreThreads = Math.min(configuredThreads, availableProcessors);
+        int maxThreads = Math.max(coreThreads, Math.min(configuredThreads * 2, availableProcessors * 2));
+        
+        // Use ThreadPoolExecutor for better control
+        ThreadPoolExecutor executor = new ThreadPoolExecutor(
+            coreThreads,                    // Core pool size
+            maxThreads,                     // Maximum pool size
+            60L,                           // Keep alive time
+            TimeUnit.SECONDS,              // Time unit
+            new LinkedBlockingQueue<>(1000), // Work queue with bounded size
+            new ThreadFactoryBuilder()
+                .setNameFormat("delta-commit-%d")
+                .setDaemon(false)
+                .setPriority(Thread.NORM_PRIORITY)
+                .setUncaughtExceptionHandler((thread, exception) -> {
+                    log.error("Uncaught exception in commit executor thread: {}", thread.getName(), exception);
+                })
+                .build(),
+            new ThreadPoolExecutor.CallerRunsPolicy() // Rejection policy
+        );
+        
+        // Allow core threads to timeout to save resources during low load
+        executor.allowCoreThreadTimeOut(true);
+        
+        log.info("Created commit executor: core={}, max={}, queue=1000, configured={}, available_processors={}", 
+            coreThreads, maxThreads, configuredThreads, availableProcessors);
+        
+        return executor;
     }
     
     private Configuration createOptimizedHadoopConfig() {
@@ -416,6 +497,80 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     }
     
     /**
+     * Determines if an IOException is retryable
+     */
+    private boolean isRetryableIOException(IOException e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        
+        message = message.toLowerCase();
+        
+        // Retryable I/O patterns
+        return message.contains("timeout") ||
+               message.contains("connection reset") ||
+               message.contains("connection refused") ||
+               message.contains("network") ||
+               message.contains("broken pipe") ||
+               message.contains("socket") ||
+               message.contains("interrupted") ||
+               message.contains("temporary") ||
+               message.contains("unavailable") ||
+               message.contains("service temporarily") ||
+               // S3/storage specific errors
+               message.contains("503") ||
+               message.contains("500") ||
+               message.contains("throttle") ||
+               message.contains("rate limit") ||
+               // Common transient patterns
+               message.contains("retry") ||
+               message.contains("again");
+    }
+    
+    /**
+     * Determines if a RuntimeException is retryable
+     */
+    private boolean isRetryableRuntimeException(RuntimeException e) {
+        String message = e.getMessage();
+        String className = e.getClass().getSimpleName().toLowerCase();
+        
+        // Check exception type first
+        if (className.contains("timeout") ||
+            className.contains("unavailable") ||
+            className.contains("temporary")) {
+            return true;
+        }
+        
+        if (message == null) {
+            return false;
+        }
+        
+        message = message.toLowerCase();
+        
+        // Retryable runtime error patterns
+        return message.contains("timeout") ||
+               message.contains("temporary") ||
+               message.contains("unavailable") ||
+               message.contains("service temporarily") ||
+               message.contains("throttle") ||
+               message.contains("rate limit") ||
+               message.contains("connection pool") ||
+               message.contains("connection") ||
+               message.contains("deadlock") ||
+               message.contains("lock") ||
+               // S3/storage specific
+               message.contains("503") ||
+               message.contains("500") ||
+               message.contains("502") ||
+               message.contains("504") ||
+               // Delta specific transient errors
+               message.contains("metadata") ||
+               message.contains("checkpoint") ||
+               message.contains("transaction log");
+    }
+    
+    /**
      * Handles permanent failure by completing futures exceptionally and updating metrics
      */
     private void handlePermanentFailure(List<WriteBatch> batches, Exception exception) {
@@ -467,22 +622,8 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 
                 // PERFORMANCE OPTIMIZATION: Create checkpoint at regular intervals
                 // This is critical to prevent full transaction log scans that cause 12+ second latencies
-                try {
-                    log.info("Checking if checkpoint should be created for version {}", result.getVersion());
-                    if (shouldCreateCheckpoint(result.getVersion())) {
-                        log.info("Creating checkpoint for table {} at version {}", tableName, result.getVersion());
-                        table.checkpoint(engine, result.getVersion());
-                        checkpointCount.incrementAndGet();
-                        log.info("✓ Successfully created checkpoint at version {} for table {} to optimize future reads", 
-                                result.getVersion(), tableName);
-                    } else {
-                        log.debug("Checkpoint not needed for version {}", result.getVersion());
-                    }
-                } catch (Exception checkpointError) {
-                    // Don't fail the write if checkpoint fails, but log it
-                    log.error("Failed to create checkpoint at version {} for table {}: {}", 
-                            result.getVersion(), tableName, checkpointError.getMessage(), checkpointError);
-                }
+                // HIGH PRIORITY ISSUE #5 FIX: Thread-safe checkpoint creation to prevent race conditions
+                createCheckpointSafely(tableName, table, result.getVersion());
                 
                 // Update latency metrics
                 long latency = System.currentTimeMillis() - startTime;
@@ -498,7 +639,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 conflictCount.incrementAndGet();
                 log.warn("Concurrent write conflict on attempt {} for table {}, retrying...", attempt, tableName);
                 
-                // Exponential backoff
+                // Exponential backoff for conflicts
                 try {
                     Thread.sleep((long) Math.pow(2, attempt) * 100);
                 } catch (InterruptedException ie) {
@@ -506,9 +647,51 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                     throw new TableWriteException("Interrupted during retry", ie);
                 }
                 
+            } catch (java.io.IOException e) {
+                // I/O errors are often transient - retry with exponential backoff
+                lastException = e;
+                ioErrorCount.incrementAndGet();
+                
+                if (isRetryableIOException(e)) {
+                    log.warn("Recoverable I/O error on attempt {} for table {}: {}, retrying...", 
+                            attempt, tableName, e.getMessage());
+                    
+                    try {
+                        Thread.sleep((long) Math.pow(2, attempt) * 200); // Longer backoff for I/O
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new TableWriteException("Interrupted during retry", ie);
+                    }
+                } else {
+                    permanentErrorCount.incrementAndGet();
+                    log.error("Non-recoverable I/O error for table {}: {}", tableName, e.getMessage(), e);
+                    break;
+                }
+                
+            } catch (RuntimeException e) {
+                // Check if this is a transient runtime error
+                lastException = e;
+                runtimeErrorCount.incrementAndGet();
+                
+                if (isRetryableRuntimeException(e)) {
+                    log.warn("Recoverable runtime error on attempt {} for table {}: {}, retrying...", 
+                            attempt, tableName, e.getMessage());
+                    
+                    try {
+                        Thread.sleep((long) Math.pow(2, attempt) * 150);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new TableWriteException("Interrupted during retry", ie);
+                    }
+                } else {
+                    permanentErrorCount.incrementAndGet();
+                    log.error("Non-recoverable runtime error for table {}: {}", tableName, e.getMessage(), e);
+                    break;
+                }
+                
             } catch (Exception e) {
                 lastException = e;
-                log.error("Unexpected error on attempt {} for table {}", attempt, tableName, e);
+                log.error("Unexpected error on attempt {} for table {}: {}", attempt, tableName, e.getMessage(), e);
                 break;
             }
         }
@@ -517,9 +700,116 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     }
     
     /**
+     * Thread-safe checkpoint creation to prevent race conditions (HIGH PRIORITY ISSUE #5)
+     * Ensures only one checkpoint is created per version and prevents concurrent checkpoint operations
+     */
+    private void createCheckpointSafely(String tableName, Table table, long version) {
+        try {
+            log.info("Checking if checkpoint should be created for version {}", version);
+            
+            // Thread-safe check and creation
+            if (shouldCreateCheckpointThreadSafe(tableName, version)) {
+                // Check if checkpoint is already in progress for this table
+                String checkpointKey = tableName + ":" + version;
+                CompletableFuture<Void> existingCheckpoint = pendingCheckpoints.get(checkpointKey);
+                
+                if (existingCheckpoint != null) {
+                    log.debug("Checkpoint already in progress for {} version {}, waiting for completion", tableName, version);
+                    try {
+                        existingCheckpoint.get(30, TimeUnit.SECONDS); // Wait for existing checkpoint
+                        log.debug("Existing checkpoint completed for {} version {}", tableName, version);
+                    } catch (Exception e) {
+                        log.warn("Existing checkpoint failed for {} version {}: {}", tableName, version, e.getMessage());
+                    }
+                    return;
+                }
+                
+                // Create new checkpoint asynchronously to avoid blocking writes
+                CompletableFuture<Void> checkpointFuture = CompletableFuture.runAsync(() -> {
+                    try {
+                        log.info("Creating checkpoint for table {} at version {}", tableName, version);
+                        table.checkpoint(engine, version);
+                        checkpointCount.incrementAndGet();
+                        log.info("✓ Successfully created checkpoint at version {} for table {} to optimize future reads", 
+                                version, tableName);
+                    } catch (Exception checkpointError) {
+                        log.error("Failed to create checkpoint at version {} for table {}: {}", 
+                                version, tableName, checkpointError.getMessage(), checkpointError);
+                        throw new RuntimeException(checkpointError);
+                    }
+                }, commitExecutor);
+                
+                // Store the future to prevent duplicate checkpoint creation
+                CompletableFuture<Void> previous = pendingCheckpoints.putIfAbsent(checkpointKey, checkpointFuture);
+                if (previous != null) {
+                    log.debug("Another thread started checkpoint for {} version {}, cancelling this one", tableName, version);
+                    checkpointFuture.cancel(false);
+                    return;
+                }
+                
+                // Clean up completed checkpoint from tracking
+                checkpointFuture.whenComplete((result, throwable) -> {
+                    pendingCheckpoints.remove(checkpointKey);
+                    if (throwable != null) {
+                        log.error("Checkpoint failed and cleaned up for {} version {}", tableName, version);
+                    }
+                });
+                
+            } else {
+                log.debug("Checkpoint not needed for version {}", version);
+            }
+        } catch (Exception e) {
+            log.error("Error in checkpoint safety logic for table {} version {}: {}", tableName, version, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Thread-safe version of shouldCreateCheckpoint that tracks last checkpoint versions
+     */
+    private boolean shouldCreateCheckpointThreadSafe(String tableName, long version) {
+        long checkpointInterval = config.getPerformance().getCheckpointInterval();
+        
+        // Check basic interval logic first
+        if (version % checkpointInterval != 0 || version <= 0) {
+            return false;
+        }
+        
+        // Thread-safe check against last checkpoint version
+        Long lastCheckpoint = lastCheckpointVersion.get(tableName);
+        if (lastCheckpoint != null && version <= lastCheckpoint) {
+            log.debug("Checkpoint already exists for table {} at version {} (last checkpoint: {})", 
+                     tableName, version, lastCheckpoint);
+            return false;
+        }
+        
+        // Atomically update the last checkpoint version
+        Long previous = lastCheckpointVersion.putIfAbsent(tableName, version);
+        if (previous != null && version <= previous) {
+            // Another thread already created a checkpoint at this or later version
+            log.debug("Another thread created checkpoint for table {} (existing: {}, current: {})", 
+                     tableName, previous, version);
+            return false;
+        }
+        
+        // If we had a previous version, try to update it atomically
+        if (previous != null) {
+            boolean updated = lastCheckpointVersion.replace(tableName, previous, version);
+            if (!updated) {
+                log.debug("Failed to update checkpoint version for table {} (concurrent update detected)", tableName);
+                return false;
+            }
+        }
+        
+        log.debug("Checkpoint approved for table {} at version {} (interval: {})", tableName, version, checkpointInterval);
+        return true;
+    }
+    
+    /**
      * Determines if a checkpoint should be created based on configurable intervals.
      * This prevents transaction log from growing too large and causing performance issues.
+     * @deprecated Use createCheckpointSafely instead for thread safety
      */
+    @Deprecated
     private boolean shouldCreateCheckpoint(long version) {
         // Create checkpoint every N versions (configurable, default 10)
         long checkpointInterval = config.getPerformance().getCheckpointInterval();
@@ -726,10 +1016,19 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         metrics.put("background_retries", backgroundRetryCount.get());
         metrics.put("background_failures", backgroundFailureCount.get());
         
+        // Error recovery metrics (NEW)
+        metrics.put("io_errors", ioErrorCount.get());
+        metrics.put("runtime_errors", runtimeErrorCount.get());
+        metrics.put("permanent_errors", permanentErrorCount.get());
+        
         // Performance optimization metrics
         metrics.put("checkpoints_created", checkpointCount.get());
         metrics.put("batch_consolidations", batchConsolidationCount.get());
         metrics.put("optimal_batch_size", calculateOptimalBatchSize());
+        
+        // Checkpoint race condition prevention metrics (NEW - High Priority Issue #5)
+        metrics.put("pending_checkpoints", (long) pendingCheckpoints.size());
+        metrics.put("tracked_tables_for_checkpoints", (long) lastCheckpointVersion.size());
             
         // Configuration metrics
         metrics.put("configured_batch_timeout_ms", config.getPerformance().getBatchTimeoutMs());
@@ -744,6 +1043,23 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         
         // Schema manager metrics
         metrics.put("schema_cache_stats", schemaManager.getCacheStats());
+        
+        // Thread pool metrics (NEW - part of High Priority Issue #4)
+        if (commitExecutor instanceof ThreadPoolExecutor) {
+            ThreadPoolExecutor tpe = (ThreadPoolExecutor) commitExecutor;
+            metrics.put("commit_pool_core_size", tpe.getCorePoolSize());
+            metrics.put("commit_pool_max_size", tpe.getMaximumPoolSize());
+            metrics.put("commit_pool_current_size", tpe.getPoolSize());
+            metrics.put("commit_pool_active_threads", tpe.getActiveCount());
+            metrics.put("commit_pool_queue_size", tpe.getQueue().size());
+            metrics.put("commit_pool_queue_remaining_capacity", tpe.getQueue().remainingCapacity());
+            metrics.put("commit_pool_completed_tasks", tpe.getCompletedTaskCount());
+            metrics.put("commit_pool_rejected_tasks", 0L); // CallerRunsPolicy doesn't increment rejection count
+        }
+        
+        // Batch executor metrics (single thread, so simpler)
+        metrics.put("batch_executor_thread_count", 1L);
+        metrics.put("batch_executor_type", "SingleThreadScheduledExecutor");
         
         return metrics;
     }
