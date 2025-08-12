@@ -253,7 +253,7 @@ class EntityMetadataRegistryTest {
     @Test
     void testGetRegistryStats() {
         Map<String, Object> initialStats = registry.getRegistryStats();
-        assertEquals(0, initialStats.get("total_registered"));
+        assertEquals(0L, initialStats.get("total_registered"));
         assertEquals(0L, initialStats.get("active_entities"));
         assertEquals(0L, initialStats.get("inactive_entities"));
 
@@ -272,7 +272,7 @@ class EntityMetadataRegistryTest {
         registry.registerEntity("orders", orders);
 
         Map<String, Object> stats = registry.getRegistryStats();
-        assertEquals(2, stats.get("total_registered"));
+        assertEquals(2L, stats.get("total_registered"));
         assertEquals(2L, stats.get("active_entities"));
         assertEquals(0L, stats.get("inactive_entities")); // Fix: expect Long
 
@@ -280,7 +280,7 @@ class EntityMetadataRegistryTest {
         registry.deactivateEntity("orders");
 
         stats = registry.getRegistryStats();
-        assertEquals(2, stats.get("total_registered"));
+        assertEquals(2L, stats.get("total_registered"));
         assertEquals(1L, stats.get("active_entities"));
         assertEquals(1L, stats.get("inactive_entities")); // Fix: expect Long
 
@@ -308,7 +308,7 @@ class EntityMetadataRegistryTest {
         assertTrue(registry.getRegisteredEntityTypes().isEmpty());
         
         Map<String, Object> stats = registry.getRegistryStats();
-        assertEquals(0, stats.get("total_registered"));
+        assertEquals(0L, stats.get("total_registered"));
     }
 
     @Test
