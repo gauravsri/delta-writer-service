@@ -59,6 +59,13 @@ public class DeltaStoreConfiguration {
         private int checkpointInterval = 10;       // Create checkpoint every N versions
         private int optimalParquetSizeMB = 256;    // Target Parquet file size in MB
         private boolean enableBatchConsolidation = true; // Enable batch consolidation
+        
+        // HIGH PRIORITY ISSUE #6: Additional timeout settings for missing timeout handling
+        private long schemaOperationTimeoutMs = 10000;     // 10 seconds for schema operations
+        private long batchProcessingTimeoutMs = 60000;     // 60 seconds for batch processing
+        private long checkpointTimeoutMs = 120000;         // 2 minutes for checkpoint operations
+        private long backgroundOperationTimeoutMs = 30000; // 30 seconds for background tasks
+        private long threadPoolAwaitTimeoutMs = 10000;     // 10 seconds for thread pool shutdown
     }
     
     @Data
@@ -226,6 +233,9 @@ public class DeltaStoreConfiguration {
         } else if (performance.getCheckpointInterval() > 100) {
             errors.add("Checkpoint interval should not exceed 100 to maintain performance, got: " + performance.getCheckpointInterval());
         }
+        
+        // HIGH PRIORITY ISSUE #6: Validate new timeout settings
+        validateTimeoutSettings(performance, errors);
     }
     
     private void validateStorageSettings(List<String> errors) {
@@ -396,6 +406,48 @@ public class DeltaStoreConfiguration {
         // Future monitoring configuration validation can go here
         // For now, just log that monitoring validation is complete
         log.debug("Monitoring settings validation complete");
+    }
+    
+    /**
+     * Validates timeout settings (HIGH PRIORITY ISSUE #6)
+     */
+    private void validateTimeoutSettings(Performance performance, List<String> errors) {
+        // Schema operation timeout validation
+        if (performance.getSchemaOperationTimeoutMs() <= 0) {
+            errors.add("Schema operation timeout must be positive, got: " + performance.getSchemaOperationTimeoutMs());
+        } else if (performance.getSchemaOperationTimeoutMs() > 60000) { // 1 minute max
+            errors.add("Schema operation timeout should not exceed 1 minute (60000ms), got: " + performance.getSchemaOperationTimeoutMs());
+        }
+        
+        // Batch processing timeout validation
+        if (performance.getBatchProcessingTimeoutMs() <= 0) {
+            errors.add("Batch processing timeout must be positive, got: " + performance.getBatchProcessingTimeoutMs());
+        } else if (performance.getBatchProcessingTimeoutMs() > 300000) { // 5 minutes max
+            errors.add("Batch processing timeout should not exceed 5 minutes (300000ms), got: " + performance.getBatchProcessingTimeoutMs());
+        }
+        
+        // Checkpoint timeout validation
+        if (performance.getCheckpointTimeoutMs() <= 0) {
+            errors.add("Checkpoint timeout must be positive, got: " + performance.getCheckpointTimeoutMs());
+        } else if (performance.getCheckpointTimeoutMs() > 600000) { // 10 minutes max
+            errors.add("Checkpoint timeout should not exceed 10 minutes (600000ms), got: " + performance.getCheckpointTimeoutMs());
+        }
+        
+        // Background operation timeout validation
+        if (performance.getBackgroundOperationTimeoutMs() <= 0) {
+            errors.add("Background operation timeout must be positive, got: " + performance.getBackgroundOperationTimeoutMs());
+        } else if (performance.getBackgroundOperationTimeoutMs() > 180000) { // 3 minutes max
+            errors.add("Background operation timeout should not exceed 3 minutes (180000ms), got: " + performance.getBackgroundOperationTimeoutMs());
+        }
+        
+        // Thread pool await timeout validation
+        if (performance.getThreadPoolAwaitTimeoutMs() <= 0) {
+            errors.add("Thread pool await timeout must be positive, got: " + performance.getThreadPoolAwaitTimeoutMs());
+        } else if (performance.getThreadPoolAwaitTimeoutMs() > 30000) { // 30 seconds max
+            errors.add("Thread pool await timeout should not exceed 30 seconds (30000ms), got: " + performance.getThreadPoolAwaitTimeoutMs());
+        }
+        
+        log.debug("Timeout settings validation completed");
     }
     
     private int getTotalConfigurationSettings() {

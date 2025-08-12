@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -72,6 +73,11 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final AtomicLong ioErrorCount = new AtomicLong();
     private final AtomicLong runtimeErrorCount = new AtomicLong();
     private final AtomicLong permanentErrorCount = new AtomicLong();
+    
+    // HIGH PRIORITY ISSUE #6: Timeout tracking metrics
+    private final AtomicLong batchProcessingTimeoutCount = new AtomicLong();
+    private final AtomicLong checkpointTimeoutCount = new AtomicLong();
+    private final AtomicLong writeTimeoutCount = new AtomicLong();
     
     // Constants for retry handling
     private static final int MAX_BACKGROUND_RETRIES = 3;
@@ -123,17 +129,35 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         commitExecutor.shutdown();
         
         try {
-            if (!batchExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                log.warn("Batch executor did not terminate gracefully, forcing shutdown");
+            // HIGH PRIORITY ISSUE #6: Use configurable thread pool await timeout
+            long awaitTimeoutMs = config.getPerformance().getThreadPoolAwaitTimeoutMs();
+            long awaitTimeoutSeconds = awaitTimeoutMs / 1000;
+            
+            if (!batchExecutor.awaitTermination(awaitTimeoutSeconds, TimeUnit.SECONDS)) {
+                log.warn("Batch executor did not terminate gracefully after {}ms, forcing shutdown", awaitTimeoutMs);
                 batchExecutor.shutdownNow();
+                
+                // Give a final chance for forced shutdown
+                if (!batchExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    log.error("Batch executor failed to terminate even after forced shutdown");
+                }
             }
-            if (!commitExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                log.warn("Commit executor did not terminate gracefully, forcing shutdown");
+            
+            if (!commitExecutor.awaitTermination(awaitTimeoutSeconds, TimeUnit.SECONDS)) {
+                log.warn("Commit executor did not terminate gracefully after {}ms, forcing shutdown", awaitTimeoutMs);
                 commitExecutor.shutdownNow();
+                
+                // Give a final chance for forced shutdown
+                if (!commitExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                    log.error("Commit executor failed to terminate even after forced shutdown");
+                }
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("Interrupted while waiting for executor termination");
+            // Force shutdown immediately if interrupted
+            batchExecutor.shutdownNow();
+            commitExecutor.shutdownNow();
         }
         
         // Clean up checkpoint tracking (HIGH PRIORITY ISSUE #5)
@@ -293,6 +317,11 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             long writeTimeoutMs = config.getPerformance().getWriteTimeoutMs();
             TransactionCommitResult result = batch.future.get(writeTimeoutMs, TimeUnit.MILLISECONDS);
             log.debug("Write completed at version: {}", result.getVersion());
+        } catch (TimeoutException e) {
+            writeTimeoutCount.incrementAndGet(); // HIGH PRIORITY ISSUE #6: Track timeout metrics
+            log.error("Write operation timeout after {}ms for table: {}", 
+                config.getPerformance().getWriteTimeoutMs(), tableName);
+            throw new TableWriteException("Write timeout after " + config.getPerformance().getWriteTimeoutMs() + "ms", e);
         } catch (Exception e) {
             throw new TableWriteException("Failed to write to table: " + tableName, e);
         }
@@ -336,15 +365,28 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 processingFutures.add(future);
             }
             
-            // Wait for all table groups to complete processing (non-blocking for this method)
-            CompletableFuture.allOf(processingFutures.toArray(new CompletableFuture[0]))
-                .whenComplete((result, throwable) -> {
-                    if (throwable != null) {
-                        log.error("Error in parallel batch processing", throwable);
-                    } else {
-                        log.debug("All {} table groups processed successfully", tableGroups.size());
+            // HIGH PRIORITY ISSUE #6: Add timeout handling for batch processing
+            CompletableFuture<Void> allFutures = CompletableFuture.allOf(processingFutures.toArray(new CompletableFuture[0]));
+            
+            try {
+                long batchProcessingTimeoutMs = config.getPerformance().getBatchProcessingTimeoutMs();
+                allFutures.get(batchProcessingTimeoutMs, TimeUnit.MILLISECONDS);
+                log.debug("All {} table groups processed successfully", tableGroups.size());
+            } catch (TimeoutException e) {
+                batchProcessingTimeoutCount.incrementAndGet(); // HIGH PRIORITY ISSUE #6: Track timeout metrics
+                log.warn("Batch processing timeout after {}ms, cancelling remaining operations", 
+                    config.getPerformance().getBatchProcessingTimeoutMs());
+                allFutures.cancel(true);
+                // Cancel individual futures that haven't completed
+                processingFutures.forEach(future -> {
+                    if (!future.isDone()) {
+                        future.cancel(true);
                     }
                 });
+            } catch (Exception e) {
+                log.error("Error in parallel batch processing", e);
+                allFutures.cancel(true);
+            }
             
         } catch (Exception e) {
             log.error("Error processing batches", e);
@@ -716,8 +758,15 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                 if (existingCheckpoint != null) {
                     log.debug("Checkpoint already in progress for {} version {}, waiting for completion", tableName, version);
                     try {
-                        existingCheckpoint.get(30, TimeUnit.SECONDS); // Wait for existing checkpoint
+                        // HIGH PRIORITY ISSUE #6: Use configurable checkpoint timeout
+                        long checkpointTimeoutMs = config.getPerformance().getCheckpointTimeoutMs();
+                        existingCheckpoint.get(checkpointTimeoutMs, TimeUnit.MILLISECONDS);
                         log.debug("Existing checkpoint completed for {} version {}", tableName, version);
+                    } catch (TimeoutException e) {
+                        checkpointTimeoutCount.incrementAndGet(); // HIGH PRIORITY ISSUE #6: Track timeout metrics
+                        log.warn("Existing checkpoint timeout after {}ms for {} version {}, proceeding anyway", 
+                            config.getPerformance().getCheckpointTimeoutMs(), tableName, version);
+                        // Don't return, let the current thread try to create checkpoint
                     } catch (Exception e) {
                         log.warn("Existing checkpoint failed for {} version {}: {}", tableName, version, e.getMessage());
                     }
@@ -1021,6 +1070,11 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         metrics.put("runtime_errors", runtimeErrorCount.get());
         metrics.put("permanent_errors", permanentErrorCount.get());
         
+        // HIGH PRIORITY ISSUE #6: Timeout metrics
+        metrics.put("batch_processing_timeouts", batchProcessingTimeoutCount.get());
+        metrics.put("checkpoint_timeouts", checkpointTimeoutCount.get());
+        metrics.put("write_timeouts", writeTimeoutCount.get());
+        
         // Performance optimization metrics
         metrics.put("checkpoints_created", checkpointCount.get());
         metrics.put("batch_consolidations", batchConsolidationCount.get());
@@ -1035,6 +1089,13 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         metrics.put("configured_max_batch_size", config.getPerformance().getMaxBatchSize());
         metrics.put("configured_max_retries", config.getPerformance().getMaxRetries());
         metrics.put("configured_checkpoint_interval", config.getPerformance().getCheckpointInterval());
+        
+        // HIGH PRIORITY ISSUE #6: Timeout configuration metrics
+        metrics.put("configured_schema_operation_timeout_ms", config.getPerformance().getSchemaOperationTimeoutMs());
+        metrics.put("configured_batch_processing_timeout_ms", config.getPerformance().getBatchProcessingTimeoutMs());
+        metrics.put("configured_checkpoint_timeout_ms", config.getPerformance().getCheckpointTimeoutMs());
+        metrics.put("configured_background_operation_timeout_ms", config.getPerformance().getBackgroundOperationTimeoutMs());
+        metrics.put("configured_thread_pool_await_timeout_ms", config.getPerformance().getThreadPoolAwaitTimeoutMs());
         
         // S3A optimization status
         metrics.put("s3a_optimizations_enabled", true);
