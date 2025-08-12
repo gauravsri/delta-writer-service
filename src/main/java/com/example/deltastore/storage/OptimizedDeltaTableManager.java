@@ -22,6 +22,7 @@ import com.example.deltastore.schema.DeltaSchemaManager;
 import com.example.deltastore.exception.TableWriteException;
 import com.example.deltastore.util.DeltaKernelBatchOperations;
 import com.example.deltastore.util.ResourceLeakTracker;
+import com.example.deltastore.util.ThreadPoolMonitor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Primary;
@@ -52,6 +53,7 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final DeltaSchemaManager schemaManager;
     private final DeltaStoragePathResolver pathResolver;
     private final ResourceLeakTracker resourceTracker;
+    private final ThreadPoolMonitor threadPoolMonitor;
     private final Configuration hadoopConf;
     private final Engine engine;
     
@@ -103,12 +105,14 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
                                       DeltaStoreConfiguration config,
                                       DeltaSchemaManager schemaManager,
                                       DeltaStoragePathResolver pathResolver,
-                                      ResourceLeakTracker resourceTracker) {
+                                      ResourceLeakTracker resourceTracker,
+                                      ThreadPoolMonitor threadPoolMonitor) {
         this.storageProperties = storageProperties;
         this.config = config;
         this.schemaManager = schemaManager;
         this.pathResolver = pathResolver;
         this.resourceTracker = resourceTracker;
+        this.threadPoolMonitor = threadPoolMonitor;
         this.hadoopConf = createOptimizedHadoopConfig();
         this.engine = DefaultEngine.create(hadoopConf);
         
@@ -127,7 +131,11 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         batchExecutor.scheduleWithFixedDelay(() -> resourceTracker.detectLeaks(10), 
             5, 5, TimeUnit.MINUTES);
         
-        log.info("Write-only Delta Table Manager initialized with batching ({}ms) and leak detection", batchTimeoutMs);
+        // Start thread pool monitoring (every 30 seconds)
+        batchExecutor.scheduleWithFixedDelay(() -> threadPoolMonitor.monitorPools(), 
+            30, 30, TimeUnit.SECONDS);
+        
+        log.info("Write-only Delta Table Manager initialized with batching ({}ms), leak detection, and thread pool monitoring", batchTimeoutMs);
     }
     
     @PreDestroy
@@ -233,6 +241,9 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         log.info("Created commit executor: core={}, max={}, queue=1000, configured={}, available_processors={}", 
             coreThreads, maxThreads, configuredThreads, availableProcessors);
         
+        // Register thread pool for monitoring
+        threadPoolMonitor.registerThreadPool("commit-executor", executor);
+        
         return executor;
     }
     
@@ -317,6 +328,17 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             return;
         }
         
+        // Check if backpressure should be applied due to thread pool congestion
+        if (threadPoolMonitor.shouldApplyBackpressure("commit-executor")) {
+            log.warn("Applying backpressure for table '{}' due to thread pool congestion", tableName);
+            try {
+                Thread.sleep(100); // Brief delay to reduce load
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new TableWriteException("Interrupted during backpressure delay", e);
+            }
+        }
+        
         // Add to write queue for batch processing
         WriteBatch batch = new WriteBatch(tableName, records, schema);
         writeQueue.offer(batch);
@@ -367,11 +389,22 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             // Process each table group in parallel with error tracking
             List<CompletableFuture<Void>> processingFutures = new ArrayList<>();
             for (Map.Entry<String, List<WriteBatch>> entry : tableGroups.entrySet()) {
-                CompletableFuture<Void> future = CompletableFuture.runAsync(
-                    () -> processTableBatches(entry.getKey(), entry.getValue()), 
-                    commitExecutor
-                );
-                processingFutures.add(future);
+                try {
+                    CompletableFuture<Void> future = CompletableFuture.runAsync(
+                        () -> processTableBatches(entry.getKey(), entry.getValue()), 
+                        commitExecutor
+                    );
+                    processingFutures.add(future);
+                } catch (java.util.concurrent.RejectedExecutionException e) {
+                    // Track thread pool rejections for monitoring
+                    threadPoolMonitor.recordRejection("commit-executor");
+                    log.error("Task rejected by commit executor for table: {}", entry.getKey(), e);
+                    
+                    // Fail all batches in this table group
+                    for (WriteBatch batch : entry.getValue()) {
+                        batch.future.completeExceptionally(new TableWriteException("Thread pool rejected task", e));
+                    }
+                }
             }
             
             // HIGH PRIORITY ISSUE #6: Add timeout handling for batch processing

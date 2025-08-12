@@ -8,6 +8,7 @@ import com.example.deltastore.metrics.DeltaStoreMetrics;
 import com.example.deltastore.service.EntityService;
 import com.example.deltastore.service.GenericEntityServiceImpl;
 import com.example.deltastore.storage.DeltaTableManager;
+import com.example.deltastore.util.BatchMemoryMonitor;
 import com.example.deltastore.validation.EntityValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -163,13 +164,15 @@ public class AutoEntityDiscovery {
             var deltaTableManager = applicationContext.getBean("optimized", DeltaTableManager.class);
             var metricsService = applicationContext.getBean("deltaStoreMetrics", DeltaStoreMetrics.class);
             var genericEntityService = applicationContext.getBean("genericEntityService", GenericEntityService.class);
+            var batchMemoryMonitor = applicationContext.getBean(BatchMemoryMonitor.class);
             
             // Use reflection to create GenericEntityServiceImpl
             return (EntityService<GenericRecord>) new GenericEntityServiceImpl<GenericRecord>(
                 entityType,
                 deltaTableManager,
                 metricsService,
-                genericEntityService
+                genericEntityService,
+                batchMemoryMonitor
             );
         } catch (Exception e) {
             log.error("Failed to create entity service for {}: {}", entityType, e.getMessage());

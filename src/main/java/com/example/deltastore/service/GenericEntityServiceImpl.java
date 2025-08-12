@@ -5,6 +5,7 @@ import com.example.deltastore.entity.EntityOperationResult;
 import com.example.deltastore.entity.GenericEntityService;
 import com.example.deltastore.metrics.DeltaStoreMetrics;
 import com.example.deltastore.storage.DeltaTableManager;
+import com.example.deltastore.util.BatchMemoryMonitor;
 import io.micrometer.core.instrument.Timer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.generic.GenericRecord;
@@ -27,15 +28,18 @@ public class GenericEntityServiceImpl<T extends GenericRecord> implements Entity
     private final DeltaTableManager deltaTableManager;
     private final DeltaStoreMetrics metrics;
     private final GenericEntityService genericEntityService;
+    private final BatchMemoryMonitor batchMemoryMonitor;
 
     public GenericEntityServiceImpl(
             String entityType,
             @Qualifier("optimized") DeltaTableManager deltaTableManager,
             DeltaStoreMetrics metrics,
-            GenericEntityService genericEntityService) {
+            GenericEntityService genericEntityService,
+            BatchMemoryMonitor batchMemoryMonitor) {
         this.entityType = entityType;
         this.deltaTableManager = deltaTableManager;
         this.metrics = metrics;
+        this.batchMemoryMonitor = batchMemoryMonitor;
         this.genericEntityService = genericEntityService;
     }
 
@@ -74,8 +78,8 @@ public class GenericEntityServiceImpl<T extends GenericRecord> implements Entity
         long totalDeltaTransactionTime = 0;
         
         try {
-            // Process in smaller chunks for better performance and memory management
-            final int CHUNK_SIZE = 100;
+            // Get optimal chunk size from memory monitor
+            final int CHUNK_SIZE = batchMemoryMonitor.getOptimalBatchSize();
             List<List<T>> entityChunks = partitionEntities(entities, CHUNK_SIZE);
             totalBatches = entityChunks.size();
             
@@ -86,6 +90,18 @@ public class GenericEntityServiceImpl<T extends GenericRecord> implements Entity
                 List<T> chunk = entityChunks.get(chunkIndex);
                 log.debug("Processing batch {}/{} with {} entities", 
                          chunkIndex + 1, totalBatches, chunk.size());
+                
+                // Check for memory pressure before processing
+                if (batchMemoryMonitor.wouldCauseMemoryPressure(chunk.size())) {
+                    log.warn("Memory pressure detected - forcing garbage collection before batch {}/{}", 
+                            chunkIndex + 1, totalBatches);
+                    batchMemoryMonitor.forceGarbageCollection();
+                }
+                
+                // Start memory monitoring for this batch
+                String batchId = entityType + "_batch_" + System.currentTimeMillis() + "_" + chunkIndex;
+                BatchMemoryMonitor.BatchSession memorySession = batchMemoryMonitor.startBatch(
+                    batchId, chunk.size(), entityType);
                 
                 long chunkStartTime = System.currentTimeMillis();
                 
@@ -109,6 +125,9 @@ public class GenericEntityServiceImpl<T extends GenericRecord> implements Entity
                     log.debug("Successfully processed batch {}/{} in {}ms", 
                              chunkIndex + 1, totalBatches, chunkTime);
                     
+                    // Mark batch as successful
+                    memorySession.complete(true);
+                    
                 } catch (Exception e) {
                     log.warn("Failed to process batch {}/{}: {}", 
                             chunkIndex + 1, totalBatches, e.getMessage());
@@ -124,6 +143,9 @@ public class GenericEntityServiceImpl<T extends GenericRecord> implements Entity
                             .errorType(e.getClass().getSimpleName())
                             .build());
                     }
+                    
+                    // Mark batch as failed
+                    memorySession.complete(false);
                 }
             }
             

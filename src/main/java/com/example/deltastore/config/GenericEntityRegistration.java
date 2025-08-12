@@ -10,6 +10,7 @@ import com.example.deltastore.validation.EntityValidator;
 import com.example.deltastore.metrics.DeltaStoreMetrics;
 import com.example.deltastore.storage.DeltaTableManager;
 import com.example.deltastore.entity.GenericEntityService;
+import com.example.deltastore.util.BatchMemoryMonitor;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.avro.generic.GenericRecord;
@@ -40,6 +41,7 @@ public class GenericEntityRegistration {
     private final DeltaStoreMetrics metrics;
     private final GenericEntityService genericEntityService;
     private final DeltaStoreConfiguration deltaStoreConfig;
+    private final BatchMemoryMonitor batchMemoryMonitor;
 
     /**
      * Generic entity converter adapter that bridges ReflectionEntityConverter 
@@ -109,7 +111,7 @@ public class GenericEntityRegistration {
         
         // Create generic entity service for this entity type
         EntityService<GenericRecord> entityService = new GenericEntityServiceImpl<>(
-            entityType, deltaTableManager, metrics, genericEntityService);
+            entityType, deltaTableManager, metrics, genericEntityService, batchMemoryMonitor);
 
         // Try to find the corresponding Avro class
         Class<? extends GenericRecord> entityClass = findEntityClass(entityType);

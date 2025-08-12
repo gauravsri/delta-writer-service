@@ -4,6 +4,7 @@ import com.example.deltastore.config.DeltaStoreConfiguration;
 import com.example.deltastore.config.StorageProperties;
 import com.example.deltastore.schema.DeltaSchemaManager;
 import com.example.deltastore.util.ResourceLeakTracker;
+import com.example.deltastore.util.ThreadPoolMonitor;
 import io.delta.kernel.types.StructType;
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericRecord;
@@ -66,7 +67,8 @@ class OptimizedDeltaTableManagerTest {
         lenient().when(storageProperties.getSecretKey()).thenReturn("minio123");
         
         ResourceLeakTracker resourceTracker = Mockito.mock(ResourceLeakTracker.class);
-        manager = new OptimizedDeltaTableManager(storageProperties, config, schemaManager, pathResolver, resourceTracker);
+        ThreadPoolMonitor threadPoolMonitor = Mockito.mock(ThreadPoolMonitor.class);
+        manager = new OptimizedDeltaTableManager(storageProperties, config, schemaManager, pathResolver, resourceTracker, threadPoolMonitor);
         
         // Create test schema and record
         testSchema = Schema.parse("{\"type\":\"record\",\"name\":\"TestRecord\",\"fields\":[{\"name\":\"id\",\"type\":\"string\"},{\"name\":\"value\",\"type\":\"int\"}]}");
@@ -128,8 +130,9 @@ class OptimizedDeltaTableManagerTest {
         when(storageProperties.getEndpoint()).thenReturn(null);
         
         ResourceLeakTracker localResourceTracker = Mockito.mock(ResourceLeakTracker.class);
+        ThreadPoolMonitor localThreadPoolMonitor = Mockito.mock(ThreadPoolMonitor.class);
         OptimizedDeltaTableManager localManager = new OptimizedDeltaTableManager(
-                storageProperties, config, schemaManager, pathResolver, localResourceTracker);
+                storageProperties, config, schemaManager, pathResolver, localResourceTracker, localThreadPoolMonitor);
         
         Configuration hadoopConf = (Configuration) ReflectionTestUtils.getField(localManager, "hadoopConf");
         assertEquals("file:///", hadoopConf.get("fs.default.name"));
