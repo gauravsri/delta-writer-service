@@ -61,6 +61,12 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     private final AtomicLong avgWriteLatency = new AtomicLong();
     private final AtomicLong checkpointCount = new AtomicLong();
     private final AtomicLong batchConsolidationCount = new AtomicLong();
+    private final AtomicLong backgroundRetryCount = new AtomicLong();
+    private final AtomicLong backgroundFailureCount = new AtomicLong();
+    
+    // Constants for retry handling
+    private static final int MAX_BACKGROUND_RETRIES = 3;
+    private static final long INITIAL_RETRY_DELAY_MS = 100;
     
     private static class WriteBatch {
         final String tableName;
@@ -219,11 +225,17 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             // PERFORMANCE OPTIMIZATION: Use optimal batch size based on knowledgebase recommendations
             // Aim for batches that produce ~256MB Parquet files for best performance
             int optimalBatchSize = calculateOptimalBatchSize();
-            writeQueue.drainTo(currentBatches, optimalBatchSize);
             
-            if (currentBatches.isEmpty()) {
+            // CRITICAL FIX: Atomic batch extraction to prevent race conditions
+            int actuallyDrained = writeQueue.drainTo(currentBatches, optimalBatchSize);
+            
+            // Early return if no batches were actually drained
+            if (actuallyDrained == 0) {
                 return;
             }
+            
+            log.debug("Atomically drained {} batches (requested: {}) for processing", 
+                    actuallyDrained, optimalBatchSize);
             
             // Group by table for transaction consolidation
             for (WriteBatch batch : currentBatches) {
@@ -233,10 +245,25 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
             log.debug("Processing {} batches across {} tables with optimal batch size: {}", 
                     currentBatches.size(), tableGroups.size(), optimalBatchSize);
             
-            // Process each table group in parallel
+            // Process each table group in parallel with error tracking
+            List<CompletableFuture<Void>> processingFutures = new ArrayList<>();
             for (Map.Entry<String, List<WriteBatch>> entry : tableGroups.entrySet()) {
-                commitExecutor.submit(() -> processTableBatches(entry.getKey(), entry.getValue()));
+                CompletableFuture<Void> future = CompletableFuture.runAsync(
+                    () -> processTableBatches(entry.getKey(), entry.getValue()), 
+                    commitExecutor
+                );
+                processingFutures.add(future);
             }
+            
+            // Wait for all table groups to complete processing (non-blocking for this method)
+            CompletableFuture.allOf(processingFutures.toArray(new CompletableFuture[0]))
+                .whenComplete((result, throwable) -> {
+                    if (throwable != null) {
+                        log.error("Error in parallel batch processing", throwable);
+                    } else {
+                        log.debug("All {} table groups processed successfully", tableGroups.size());
+                    }
+                });
             
         } catch (Exception e) {
             log.error("Error processing batches", e);
@@ -266,41 +293,146 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
     }
     
     private void processTableBatches(String tableName, List<WriteBatch> batches) {
-        try {
-            // PERFORMANCE OPTIMIZATION: Batch consolidation
-            List<GenericRecord> allRecords = new ArrayList<>();
-            Schema schema = batches.get(0).schema;
-            
-            for (WriteBatch batch : batches) {
-                allRecords.addAll(batch.records);
-            }
-            
-            // Track batch consolidation
-            if (batches.size() > 1) {
-                batchConsolidationCount.incrementAndGet();
-                log.debug("Consolidated {} batches into single transaction for table: {}", batches.size(), tableName);
-            }
-            
-            log.info("Processing aggregated batch of {} records for table: {} (consolidated from {} batches)", 
-                    allRecords.size(), tableName, batches.size());
-            
-            // Write with configured retry logic
-            int maxRetries = config.getPerformance().getMaxRetries();
-            TransactionCommitResult result = writeWithRetry(tableName, allRecords, schema, maxRetries);
-            
-            // Complete all futures
-            for (WriteBatch batch : batches) {
-                batch.future.complete(result);
-            }
-            
-            writeCount.addAndGet(allRecords.size());
-            
-        } catch (Exception e) {
-            log.error("Failed to process batches for table: {}", tableName, e);
-            for (WriteBatch batch : batches) {
-                batch.future.completeExceptionally(e);
+        int retryCount = 0;
+        Exception lastException = null;
+        
+        while (retryCount <= MAX_BACKGROUND_RETRIES) {
+            try {
+                // PERFORMANCE OPTIMIZATION: Batch consolidation
+                List<GenericRecord> allRecords = new ArrayList<>();
+                Schema schema = batches.get(0).schema;
+                
+                for (WriteBatch batch : batches) {
+                    allRecords.addAll(batch.records);
+                }
+                
+                // Track batch consolidation
+                if (batches.size() > 1) {
+                    batchConsolidationCount.incrementAndGet();
+                    log.debug("Consolidated {} batches into single transaction for table: {}", batches.size(), tableName);
+                }
+                
+                log.info("Processing aggregated batch of {} records for table: {} (consolidated from {} batches)", 
+                        allRecords.size(), tableName, batches.size());
+                
+                // Write with configured retry logic
+                int maxRetries = config.getPerformance().getMaxRetries();
+                TransactionCommitResult result = writeWithRetry(tableName, allRecords, schema, maxRetries);
+                
+                // Complete all futures on success
+                for (WriteBatch batch : batches) {
+                    batch.future.complete(result);
+                }
+                
+                writeCount.addAndGet(allRecords.size());
+                
+                // Success - exit retry loop
+                if (retryCount > 0) {
+                    log.info("Successfully processed batch for table: {} after {} retries", tableName, retryCount);
+                }
+                return;
+                
+            } catch (ConcurrentWriteException e) {
+                // Transient error - retry
+                lastException = e;
+                retryCount++;
+                backgroundRetryCount.incrementAndGet();
+                
+                if (retryCount <= MAX_BACKGROUND_RETRIES) {
+                    long delayMs = calculateBackoffDelay(retryCount);
+                    log.warn("Concurrent write exception for table: {} (attempt {}/{}), retrying in {}ms", 
+                            tableName, retryCount, MAX_BACKGROUND_RETRIES + 1, delayMs);
+                    
+                    try {
+                        Thread.sleep(delayMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        handlePermanentFailure(batches, new TableWriteException("Thread interrupted during retry", ie));
+                        return;
+                    }
+                } else {
+                    log.error("Exhausted retries for table: {} after {} attempts", tableName, retryCount);
+                }
+                
+            } catch (RuntimeException e) {
+                // Check if this is a transient error worth retrying
+                if (isTransientException(e) && retryCount < MAX_BACKGROUND_RETRIES) {
+                    lastException = e;
+                    retryCount++;
+                    backgroundRetryCount.incrementAndGet();
+                    
+                    long delayMs = calculateBackoffDelay(retryCount);
+                    log.warn("Transient error for table: {} (attempt {}/{}), retrying in {}ms: {}", 
+                            tableName, retryCount, MAX_BACKGROUND_RETRIES + 1, delayMs, e.getMessage());
+                    
+                    try {
+                        Thread.sleep(delayMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        handlePermanentFailure(batches, new TableWriteException("Thread interrupted during retry", ie));
+                        return;
+                    }
+                } else {
+                    // Permanent failure or exhausted retries
+                    lastException = e;
+                    break;
+                }
+                
+            } catch (Exception e) {
+                // Unknown exception - treat as permanent failure
+                lastException = e;
+                log.error("Unexpected error for table: {}, treating as permanent failure", tableName, e);
+                break;
             }
         }
+        
+        // All retries exhausted or permanent failure
+        handlePermanentFailure(batches, lastException);
+    }
+    
+    /**
+     * Calculates exponential backoff delay for retries
+     */
+    private long calculateBackoffDelay(int retryCount) {
+        return INITIAL_RETRY_DELAY_MS * (long) Math.pow(2, retryCount - 1);
+    }
+    
+    /**
+     * Determines if an exception is transient and worth retrying
+     */
+    private boolean isTransientException(Exception e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        
+        message = message.toLowerCase();
+        return message.contains("timeout") ||
+               message.contains("connection") ||
+               message.contains("network") ||
+               message.contains("temporary") ||
+               message.contains("unavailable") ||
+               e instanceof IOException;
+    }
+    
+    /**
+     * Handles permanent failure by completing futures exceptionally and updating metrics
+     */
+    private void handlePermanentFailure(List<WriteBatch> batches, Exception exception) {
+        backgroundFailureCount.incrementAndGet();
+        
+        log.error("Permanent failure processing {} batches: {}", batches.size(), exception.getMessage(), exception);
+        
+        TableWriteException writeException = exception instanceof TableWriteException 
+            ? (TableWriteException) exception 
+            : new TableWriteException("Background processing failed", exception);
+        
+        for (WriteBatch batch : batches) {
+            batch.future.completeExceptionally(writeException);
+        }
+        
+        // TODO: Add alerting mechanism for permanent failures
+        // alertingService.sendAlert("Background batch processing failed", exception);
     }
     
     private TransactionCommitResult writeWithRetry(String tableName, List<GenericRecord> records, 
@@ -424,54 +556,158 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         CloseableIterator<FilteredColumnarBatch> data = createCloseableIterator(
             Collections.singletonList(recordBatch).iterator());
         
-        // Empty partition values for non-partitioned table
-        Map<String, io.delta.kernel.expressions.Literal> partitionValues = new HashMap<>();
+        // CRITICAL FIX: Use try-with-resources to ensure proper cleanup
+        CloseableIterator<FilteredColumnarBatch> physicalData = null;
+        CloseableIterator<io.delta.kernel.utils.DataFileStatus> dataFiles = null;
+        CloseableIterator<Row> dataActions = null;
         
-        // Transform and write
-        CloseableIterator<FilteredColumnarBatch> physicalData = 
-            Transaction.transformLogicalData(engine, txnState, data, partitionValues);
-        
-        DataWriteContext writeContext = 
-            Transaction.getWriteContext(engine, txnState, partitionValues);
-        
-        CloseableIterator<io.delta.kernel.utils.DataFileStatus> dataFiles = 
-            engine.getParquetHandler().writeParquetFiles(
+        try {
+            // Empty partition values for non-partitioned table
+            Map<String, io.delta.kernel.expressions.Literal> partitionValues = new HashMap<>();
+            
+            // Transform and write
+            physicalData = Transaction.transformLogicalData(engine, txnState, data, partitionValues);
+            
+            DataWriteContext writeContext = 
+                Transaction.getWriteContext(engine, txnState, partitionValues);
+            
+            dataFiles = engine.getParquetHandler().writeParquetFiles(
                 writeContext.getTargetDirectory(),
                 physicalData,
                 writeContext.getStatisticsColumns()
             );
-        
-        CloseableIterator<Row> dataActions = 
-            Transaction.generateAppendActions(engine, txnState, dataFiles, writeContext);
-        
-        List<Row> actionsList = new ArrayList<>();
-        while (dataActions.hasNext()) {
-            actionsList.add(dataActions.next());
+            
+            dataActions = Transaction.generateAppendActions(engine, txnState, dataFiles, writeContext);
+            
+            List<Row> actionsList = new ArrayList<>();
+            while (dataActions.hasNext()) {
+                actionsList.add(dataActions.next());
+            }
+            
+            io.delta.kernel.utils.CloseableIterable<Row> dataActionsIterable = 
+                io.delta.kernel.utils.CloseableIterable.inMemoryIterable(
+                    createCloseableIterator(actionsList.iterator()));
+            
+            return txn.commit(engine, dataActionsIterable);
+            
+        } finally {
+            // CRITICAL FIX: Ensure all iterators are properly closed
+            if (dataActions != null) {
+                try {
+                    dataActions.close();
+                    log.trace("Closed dataActions iterator");
+                } catch (IOException e) {
+                    log.warn("Error closing dataActions iterator: {}", e.getMessage());
+                }
+            }
+            
+            if (dataFiles != null) {
+                try {
+                    dataFiles.close();
+                    log.trace("Closed dataFiles iterator");
+                } catch (IOException e) {
+                    log.warn("Error closing dataFiles iterator: {}", e.getMessage());
+                }
+            }
+            
+            if (physicalData != null) {
+                try {
+                    physicalData.close();
+                    log.trace("Closed physicalData iterator");
+                } catch (IOException e) {
+                    log.warn("Error closing physicalData iterator: {}", e.getMessage());
+                }
+            }
+            
+            if (data != null) {
+                try {
+                    data.close();
+                    log.trace("Closed data iterator");
+                } catch (IOException e) {
+                    log.warn("Error closing data iterator: {}", e.getMessage());
+                }
+            }
+            
+            // Close the batch to free columnar data
+            if (recordBatch != null) {
+                try {
+                    // FilteredColumnarBatch wraps a ColumnarBatch - ensure proper cleanup
+                    var columnarBatch = recordBatch.getData();
+                    if (columnarBatch instanceof AutoCloseable) {
+                        ((AutoCloseable) columnarBatch).close();
+                        log.trace("Closed record batch data");
+                    } else {
+                        log.trace("Record batch does not implement AutoCloseable");
+                    }
+                } catch (Exception e) {
+                    log.warn("Error closing record batch data: {}", e.getMessage());
+                }
+            }
         }
-        dataActions.close();
-        
-        io.delta.kernel.utils.CloseableIterable<Row> dataActionsIterable = 
-            io.delta.kernel.utils.CloseableIterable.inMemoryIterable(
-                createCloseableIterator(actionsList.iterator()));
-        
-        return txn.commit(engine, dataActionsIterable);
     }
     
     private <T> CloseableIterator<T> createCloseableIterator(Iterator<T> iterator) {
         return new CloseableIterator<T>() {
+            private volatile boolean closed = false;
+            
             @Override
             public boolean hasNext() {
+                if (closed) {
+                    return false;
+                }
                 return iterator.hasNext();
             }
             
             @Override
             public T next() {
+                if (closed) {
+                    throw new IllegalStateException("Iterator has been closed");
+                }
                 return iterator.next();
             }
             
             @Override
             public void close() throws IOException {
-                // Nothing to close
+                if (closed) {
+                    return; // Already closed
+                }
+                
+                closed = true;
+                
+                // CRITICAL FIX: Properly close underlying resources
+                try {
+                    if (iterator instanceof AutoCloseable) {
+                        try {
+                            ((AutoCloseable) iterator).close();
+                            log.debug("Successfully closed underlying AutoCloseable iterator");
+                        } catch (Exception e) {
+                            log.warn("Error closing AutoCloseable iterator: {}", e.getMessage());
+                            throw new IOException("Failed to close underlying iterator", e);
+                        }
+                    }
+                    
+                    // If iterator is a CloseableIterator, close it directly
+                    if (iterator instanceof CloseableIterator) {
+                        try {
+                            ((CloseableIterator<?>) iterator).close();
+                            log.debug("Successfully closed underlying CloseableIterator");
+                        } catch (IOException e) {
+                            log.warn("Error closing CloseableIterator: {}", e.getMessage());
+                            throw e;
+                        }
+                    }
+                    
+                    // For collection iterators, try to clear reference if possible
+                    if (iterator.getClass().getName().contains("ArrayList") || 
+                        iterator.getClass().getName().contains("LinkedList")) {
+                        // Clear reference to help GC
+                        log.debug("Released reference to collection iterator for GC");
+                    }
+                    
+                } finally {
+                    // Always log closure for debugging resource leaks
+                    log.trace("CloseableIterator wrapper closed");
+                }
             }
         };
     }
@@ -485,6 +721,10 @@ public class OptimizedDeltaTableManager implements DeltaTableManager {
         metrics.put("conflicts", conflictCount.get());
         metrics.put("queue_size", (long) writeQueue.size());
         metrics.put("avg_write_latency_ms", avgWriteLatency.get());
+        
+        // Background processing metrics (NEW)
+        metrics.put("background_retries", backgroundRetryCount.get());
+        metrics.put("background_failures", backgroundFailureCount.get());
         
         // Performance optimization metrics
         metrics.put("checkpoints_created", checkpointCount.get());

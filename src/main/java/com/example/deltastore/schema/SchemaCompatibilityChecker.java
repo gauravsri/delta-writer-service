@@ -21,6 +21,22 @@ public class SchemaCompatibilityChecker {
      */
     public boolean isCompatible(Schema oldSchema, Schema newSchema) {
         try {
+            // CRITICAL FIX: Add input validation
+            if (oldSchema == null && newSchema == null) {
+                log.debug("Both schemas are null, treating as compatible");
+                return true;
+            }
+            
+            if (oldSchema == null) {
+                log.debug("No old schema provided, new schema is acceptable");
+                return true;
+            }
+            
+            if (newSchema == null) {
+                log.warn("Attempting to replace existing schema with null schema");
+                return false;
+            }
+            
             return checkBackwardCompatibility(oldSchema, newSchema);
         } catch (Exception e) {
             log.error("Error checking schema compatibility", e);
@@ -32,6 +48,21 @@ public class SchemaCompatibilityChecker {
      * Performs backward compatibility check
      */
     private boolean checkBackwardCompatibility(Schema oldSchema, Schema newSchema) {
+        // CRITICAL FIX: Handle null schemas
+        if (oldSchema == null && newSchema == null) {
+            return true; // Both null = compatible
+        }
+        
+        if (oldSchema == null) {
+            log.info("No old schema to compare against, treating new schema as compatible");
+            return true; // No old schema = new schema is acceptable
+        }
+        
+        if (newSchema == null) {
+            log.warn("New schema is null but old schema exists, not compatible");
+            return false; // Can't replace existing schema with null
+        }
+        
         // Basic type compatibility
         if (oldSchema.getType() != newSchema.getType()) {
             log.warn("Schema type changed from {} to {}", oldSchema.getType(), newSchema.getType());

@@ -11,6 +11,8 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.List;
 import java.util.Map;
 import java.util.Collections;
+import java.util.Objects;
+import java.util.regex.Pattern;
 
 /**
  * Generic entity service that handles CRUD operations for any entity type.
@@ -202,67 +204,300 @@ public class GenericEntityService {
     }
     
     /**
-     * Converts Map data to GenericRecord for the specified entity type
+     * Converts Map data to GenericRecord for the specified entity type with comprehensive validation
      */
     private GenericRecord convertMapToGenericRecord(String entityType, Map<String, Object> data) {
-        // Create schema dynamically from data
-        Schema schema = createSchemaFromMap(entityType, data);
-        
-        // Register the schema if auto-registration is enabled
-        if (config.getSchema().isAutoRegisterSchemas()) {
-            EntityMetadata metadata = EntityMetadata.builder()
-                .entityType(entityType)
-                .schema(schema)
-                .build();
-            metadataRegistry.registerEntity(entityType, metadata);
+        // CRITICAL FIX: Validate inputs before processing
+        if (data == null) {
+            throw new IllegalArgumentException("Cannot convert null data to GenericRecord");
         }
         
-        // Convert Map to GenericRecord using Avro's GenericRecordBuilder
-        org.apache.avro.generic.GenericRecordBuilder builder = new org.apache.avro.generic.GenericRecordBuilder(schema);
-        
-        for (Schema.Field field : schema.getFields()) {
-            String fieldName = field.name();
-            Object value = data.get(fieldName);
-            builder.set(fieldName, value);
+        if (data.isEmpty()) {
+            throw new IllegalArgumentException("Cannot convert empty data map to GenericRecord");
         }
         
-        return builder.build();
+        try {
+            // Create schema dynamically from data (includes comprehensive validation)
+            Schema schema = createSchemaFromMap(entityType, data);
+            
+            // Register the schema if auto-registration is enabled
+            if (config.getSchema().isAutoRegisterSchemas()) {
+                EntityMetadata metadata = EntityMetadata.builder()
+                    .entityType(entityType)
+                    .schema(schema)
+                    .build();
+                metadataRegistry.registerEntity(entityType, metadata);
+            }
+            
+            // Convert Map to GenericRecord using Avro's GenericRecordBuilder
+            org.apache.avro.generic.GenericRecordBuilder builder = 
+                new org.apache.avro.generic.GenericRecordBuilder(schema);
+            
+            // CRITICAL FIX: Safe field mapping with type conversion
+            for (Schema.Field field : schema.getFields()) {
+                String fieldName = field.name();
+                Object value = data.get(fieldName);
+                
+                try {
+                    // Convert value to match schema type if necessary
+                    Object convertedValue = convertValueForSchema(value, field);
+                    builder.set(fieldName, convertedValue);
+                    
+                } catch (Exception e) {
+                    log.error("Failed to set field '{}' with value '{}' for entity type '{}'", 
+                        fieldName, value, entityType, e);
+                    throw new IllegalArgumentException(
+                        "Failed to convert field '" + fieldName + "' for entity type: " + entityType, e);
+                }
+            }
+            
+            GenericRecord record = builder.build();
+            log.debug("Successfully converted Map to GenericRecord for entity '{}' with {} fields", 
+                entityType, schema.getFields().size());
+            
+            return record;
+            
+        } catch (Exception e) {
+            log.error("Failed to convert Map to GenericRecord for entity type '{}': {}", 
+                entityType, e.getMessage(), e);
+            throw new IllegalArgumentException(
+                "Failed to convert data to GenericRecord for entity type: " + entityType, e);
+        }
     }
     
     /**
-     * Creates an Avro schema from Map data structure
+     * Converts a value to match the expected schema type
      */
-    private Schema createSchemaFromMap(String entityType, Map<String, Object> data) {
-        org.apache.avro.SchemaBuilder.RecordBuilder<Schema> builder = 
-            org.apache.avro.SchemaBuilder.record(entityType).namespace("com.example.deltastore.schemas");
-        
-        org.apache.avro.SchemaBuilder.FieldAssembler<Schema> fields = builder.fields();
-        
-        for (Map.Entry<String, Object> entry : data.entrySet()) {
-            String fieldName = entry.getKey();
-            Object value = entry.getValue();
-            
-            if (value == null) {
-                fields = fields.name(fieldName).type().nullable().stringType().noDefault();
-            } else if (value instanceof String) {
-                fields = fields.name(fieldName).type().stringType().noDefault();
-            } else if (value instanceof Integer) {
-                fields = fields.name(fieldName).type().intType().noDefault();
-            } else if (value instanceof Long) {
-                fields = fields.name(fieldName).type().longType().noDefault();
-            } else if (value instanceof Double) {
-                fields = fields.name(fieldName).type().doubleType().noDefault();
-            } else if (value instanceof Float) {
-                fields = fields.name(fieldName).type().floatType().noDefault();
-            } else if (value instanceof Boolean) {
-                fields = fields.name(fieldName).type().booleanType().noDefault();
+    private Object convertValueForSchema(Object value, Schema.Field field) {
+        if (value == null) {
+            // Check if field allows null
+            if (isNullableField(field)) {
+                return null;
             } else {
-                // Default to string for unknown types
-                fields = fields.name(fieldName).type().stringType().noDefault();
+                throw new IllegalArgumentException("Field '" + field.name() + "' does not allow null values");
             }
         }
         
-        return fields.endRecord();
+        Schema fieldSchema = field.schema();
+        Schema.Type schemaType = fieldSchema.getType();
+        
+        // Handle union types (typically nullable fields)
+        if (schemaType == Schema.Type.UNION) {
+            for (Schema unionType : fieldSchema.getTypes()) {
+                if (unionType.getType() != Schema.Type.NULL) {
+                    schemaType = unionType.getType();
+                    break;
+                }
+            }
+        }
+        
+        // Convert value based on expected type
+        try {
+            switch (schemaType) {
+                case STRING:
+                    return value.toString();
+                    
+                case INT:
+                    if (value instanceof Number) {
+                        return ((Number) value).intValue();
+                    } else {
+                        return Integer.parseInt(value.toString());
+                    }
+                    
+                case LONG:
+                    if (value instanceof Number) {
+                        return ((Number) value).longValue();
+                    } else {
+                        return Long.parseLong(value.toString());
+                    }
+                    
+                case FLOAT:
+                    if (value instanceof Number) {
+                        return ((Number) value).floatValue();
+                    } else {
+                        return Float.parseFloat(value.toString());
+                    }
+                    
+                case DOUBLE:
+                    if (value instanceof Number) {
+                        return ((Number) value).doubleValue();
+                    } else {
+                        return Double.parseDouble(value.toString());
+                    }
+                    
+                case BOOLEAN:
+                    if (value instanceof Boolean) {
+                        return value;
+                    } else {
+                        return Boolean.parseBoolean(value.toString());
+                    }
+                    
+                case BYTES:
+                    if (value instanceof byte[]) {
+                        return value;
+                    } else {
+                        return value.toString().getBytes();
+                    }
+                    
+                default:
+                    // For unknown types, convert to string
+                    return value.toString();
+            }
+            
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                "Cannot convert value '" + value + "' to " + schemaType + " for field '" + field.name() + "'", e);
+        }
+    }
+    
+    /**
+     * Checks if a field allows null values (is nullable)
+     */
+    private boolean isNullableField(Schema.Field field) {
+        Schema fieldSchema = field.schema();
+        if (fieldSchema.getType() == Schema.Type.UNION) {
+            return fieldSchema.getTypes().stream()
+                .anyMatch(s -> s.getType() == Schema.Type.NULL);
+        }
+        return false;
+    }
+    
+    /**
+     * Creates an Avro schema from Map data structure with comprehensive validation
+     */
+    private Schema createSchemaFromMap(String entityType, Map<String, Object> data) {
+        // CRITICAL FIX: Comprehensive input validation
+        if (data == null) {
+            throw new IllegalArgumentException("Cannot create schema from null data");
+        }
+        
+        if (data.isEmpty()) {
+            throw new IllegalArgumentException("Cannot create schema from empty data map");
+        }
+        
+        // Validate entity type
+        if (entityType == null || entityType.trim().isEmpty()) {
+            throw new IllegalArgumentException("Entity type cannot be null or empty");
+        }
+        
+        if (!isValidAvroName(entityType)) {
+            throw new IllegalArgumentException("Invalid entity type name: " + entityType + 
+                ". Must start with letter or underscore and contain only alphanumeric characters and underscores");
+        }
+        
+        // Validate all field names before processing
+        for (String fieldName : data.keySet()) {
+            if (fieldName == null || fieldName.trim().isEmpty()) {
+                throw new IllegalArgumentException("Field name cannot be null or empty");
+            }
+            
+            if (!isValidAvroName(fieldName)) {
+                throw new IllegalArgumentException("Invalid field name: " + fieldName + 
+                    ". Must start with letter or underscore and contain only alphanumeric characters and underscores");
+            }
+        }
+        
+        // Ensure at least one non-null value for type inference
+        boolean hasNonNullValue = data.values().stream().anyMatch(Objects::nonNull);
+        if (!hasNonNullValue) {
+            throw new IllegalArgumentException("Cannot infer schema types - all values are null. " +
+                "At least one field must have a non-null value for type inference");
+        }
+        
+        // Validate data size to prevent memory issues
+        if (data.size() > 1000) {
+            throw new IllegalArgumentException("Too many fields in entity data: " + data.size() + 
+                ". Maximum allowed is 1000 fields");
+        }
+        
+        try {
+            org.apache.avro.SchemaBuilder.RecordBuilder<Schema> builder = 
+                org.apache.avro.SchemaBuilder.record(entityType).namespace("com.example.deltastore.schemas");
+            
+            org.apache.avro.SchemaBuilder.FieldAssembler<Schema> fields = builder.fields();
+            
+            for (Map.Entry<String, Object> entry : data.entrySet()) {
+                String fieldName = entry.getKey();
+                Object value = entry.getValue();
+                
+                // CRITICAL FIX: Robust type inference with null handling
+                if (value == null) {
+                    // All null fields are nullable strings by default
+                    fields = fields.name(fieldName).type().nullable().stringType().noDefault();
+                } else {
+                    // Infer type from non-null value
+                    Class<?> valueClass = value.getClass();
+                    
+                    if (value instanceof String) {
+                        // Validate string length to prevent memory issues
+                        String strValue = (String) value;
+                        if (strValue.length() > 10000) {
+                            log.warn("String field '{}' has length {} which may cause performance issues", 
+                                fieldName, strValue.length());
+                        }
+                        fields = fields.name(fieldName).type().stringType().noDefault();
+                        
+                    } else if (value instanceof Integer) {
+                        fields = fields.name(fieldName).type().intType().noDefault();
+                        
+                    } else if (value instanceof Long) {
+                        fields = fields.name(fieldName).type().longType().noDefault();
+                        
+                    } else if (value instanceof Double) {
+                        fields = fields.name(fieldName).type().doubleType().noDefault();
+                        
+                    } else if (value instanceof Float) {
+                        fields = fields.name(fieldName).type().floatType().noDefault();
+                        
+                    } else if (value instanceof Boolean) {
+                        fields = fields.name(fieldName).type().booleanType().noDefault();
+                        
+                    } else if (value instanceof byte[]) {
+                        // Handle byte arrays
+                        fields = fields.name(fieldName).type().bytesType().noDefault();
+                        
+                    } else if (valueClass.isPrimitive()) {
+                        // Handle other primitive wrapper types
+                        if (valueClass == Byte.class || valueClass == Short.class) {
+                            fields = fields.name(fieldName).type().intType().noDefault();
+                        } else {
+                            // Default to string for unknown primitive types
+                            log.warn("Unknown primitive type {} for field '{}', defaulting to string", 
+                                valueClass.getSimpleName(), fieldName);
+                            fields = fields.name(fieldName).type().stringType().noDefault();
+                        }
+                        
+                    } else {
+                        // Default to string for complex types, with warning
+                        log.warn("Complex type {} for field '{}' will be converted to string. " +
+                            "Consider flattening complex objects before schema generation", 
+                            valueClass.getSimpleName(), fieldName);
+                        fields = fields.name(fieldName).type().stringType().noDefault();
+                    }
+                }
+            }
+            
+            Schema schema = fields.endRecord();
+            log.debug("Successfully created schema for entity '{}' with {} fields", entityType, data.size());
+            return schema;
+            
+        } catch (Exception e) {
+            log.error("Failed to create schema for entity type '{}': {}", entityType, e.getMessage(), e);
+            throw new IllegalArgumentException("Failed to create valid Avro schema for entity type: " + entityType, e);
+        }
+    }
+    
+    /**
+     * Validates if a name is valid for Avro schema (record or field names)
+     */
+    private boolean isValidAvroName(String name) {
+        if (name == null || name.isEmpty()) {
+            return false;
+        }
+        
+        // Avro names must start with [A-Za-z_] and contain only [A-Za-z0-9_]
+        Pattern avroNamePattern = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+        return avroNamePattern.matcher(name).matches() && name.length() <= 255; // Reasonable length limit
     }
     
     /**

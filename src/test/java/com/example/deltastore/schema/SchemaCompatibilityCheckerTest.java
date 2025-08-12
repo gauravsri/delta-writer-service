@@ -305,7 +305,21 @@ class SchemaCompatibilityCheckerTest {
 
     @Test
     void testHandleExceptionInCompatibilityCheck() {
-        // Test error handling by passing null schemas
-        assertFalse(checker.isCompatible(null, null));
+        // Test null schema handling - both null should be compatible
+        assertTrue(checker.isCompatible(null, null));
+        
+        // Test null old schema with new schema - should be compatible
+        String schemaJson = """
+            {
+                "type": "record",
+                "name": "TestRecord",
+                "fields": [{"name": "id", "type": "string"}]
+            }
+            """;
+        Schema newSchema = new Schema.Parser().parse(schemaJson);
+        assertTrue(checker.isCompatible(null, newSchema));
+        
+        // Test existing schema with null new schema - should be incompatible
+        assertFalse(checker.isCompatible(newSchema, null));
     }
 }

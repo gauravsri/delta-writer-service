@@ -272,7 +272,7 @@ class EntityMetadataRegistryTest {
         Map<String, Object> stats = registry.getRegistryStats();
         assertEquals(2, stats.get("total_registered"));
         assertEquals(2L, stats.get("active_entities"));
-        assertEquals(0, stats.get("inactive_entities"));
+        assertEquals(0L, stats.get("inactive_entities")); // Fix: expect Long
 
         // Deactivate one
         registry.deactivateEntity("orders");
@@ -280,7 +280,7 @@ class EntityMetadataRegistryTest {
         stats = registry.getRegistryStats();
         assertEquals(2, stats.get("total_registered"));
         assertEquals(1L, stats.get("active_entities"));
-        assertEquals(1, stats.get("inactive_entities"));
+        assertEquals(1L, stats.get("inactive_entities")); // Fix: expect Long
 
         @SuppressWarnings("unchecked")
         List<String> entityTypes = (List<String>) stats.get("entity_types");
