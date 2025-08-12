@@ -2,6 +2,7 @@ package com.example.deltastore.entity;
 
 import com.example.deltastore.entity.EntityMetadata;
 import com.example.deltastore.entity.EntityMetadataRegistry;
+import com.example.deltastore.config.DeltaStoreConfiguration;
 import com.example.deltastore.schemas.User;
 import org.apache.avro.Schema;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,7 +24,8 @@ class EntityMetadataRegistryTest {
 
     @BeforeEach
     void setUp() {
-        registry = new EntityMetadataRegistry();
+        DeltaStoreConfiguration config = new DeltaStoreConfiguration();
+        registry = new EntityMetadataRegistry(config);
     }
 
     @Test

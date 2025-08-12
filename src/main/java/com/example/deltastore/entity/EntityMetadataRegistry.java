@@ -3,10 +3,13 @@ package com.example.deltastore.entity;
 import org.apache.avro.Schema;
 import org.springframework.stereotype.Component;
 import lombok.extern.slf4j.Slf4j;
+import com.example.deltastore.config.DeltaStoreConfiguration;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.security.MessageDigest;
@@ -14,19 +17,56 @@ import java.security.NoSuchAlgorithmException;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Registry for managing entity metadata and schemas.
- * Provides dynamic entity registration and schema management.
+ * Registry for managing entity metadata and schemas with bounded memory usage.
+ * Implements TTL-based eviction and configurable size limits to prevent memory leaks.
  */
 @Component
 @Slf4j
 public class EntityMetadataRegistry {
     
-    private final Map<String, EntityMetadata> entityMetadata = new ConcurrentHashMap<>();
-    private final Map<String, Schema> entitySchemas = new ConcurrentHashMap<>();
+    // FIXED P1 ISSUE: Replace unbounded maps with bounded Caffeine caches
+    private final Cache<String, EntityMetadata> entityMetadata;
+    private final Cache<String, Schema> entitySchemas;
     
-    // HIGH PRIORITY ISSUE #7: Thread-safe operations to prevent consistency issues
+    // Thread-safe operations to prevent consistency issues
     private final ReadWriteLock registryLock = new ReentrantReadWriteLock();
-    private final Map<String, Long> schemaRegistrationTimes = new ConcurrentHashMap<>();
+    private final Cache<String, Long> schemaRegistrationTimes;
+    private final DeltaStoreConfiguration config;
+    
+    public EntityMetadataRegistry(DeltaStoreConfiguration config) {
+        this.config = config;
+        
+        // Initialize bounded caches with TTL and size limits
+        long entityCacheTtlMs = config.getEntity().getEntityCacheTtlMs();
+        int maxEntityRegistrations = config.getEntity().getMaxEntityRegistrations();
+        
+        this.entityMetadata = Caffeine.newBuilder()
+            .maximumSize(maxEntityRegistrations)
+            .expireAfterAccess(Duration.ofMillis(entityCacheTtlMs))
+            .recordStats()
+            .removalListener((key, value, cause) -> {
+                log.info("Evicted entity metadata for '{}' (cause: {})", key, cause);
+            })
+            .build();
+            
+        this.entitySchemas = Caffeine.newBuilder()
+            .maximumSize(maxEntityRegistrations)
+            .expireAfterAccess(Duration.ofMillis(entityCacheTtlMs))
+            .recordStats()
+            .removalListener((key, value, cause) -> {
+                log.info("Evicted entity schema for '{}' (cause: {})", key, cause);
+            })
+            .build();
+            
+        this.schemaRegistrationTimes = Caffeine.newBuilder()
+            .maximumSize(maxEntityRegistrations)
+            .expireAfterAccess(Duration.ofMillis(entityCacheTtlMs))
+            .recordStats()
+            .build();
+            
+        log.info("EntityMetadataRegistry initialized with TTL: {}ms, max size: {}", 
+            entityCacheTtlMs, maxEntityRegistrations);
+    }
     
     /**
      * Registers a new entity type with metadata (HIGH PRIORITY ISSUE #7: Thread-safe with consistency checks)
@@ -38,7 +78,7 @@ public class EntityMetadataRegistry {
         registryLock.writeLock().lock();
         try {
             // HIGH PRIORITY ISSUE #7: Check for existing entity and handle appropriately
-            EntityMetadata existing = entityMetadata.get(entityType);
+            EntityMetadata existing = entityMetadata.getIfPresent(entityType);
             if (existing != null) {
                 if (existing.isActive()) {
                     // Check if schema is compatible before allowing duplicate registration
@@ -88,11 +128,11 @@ public class EntityMetadataRegistry {
     public Optional<EntityMetadata> getEntityMetadata(String entityType) {
         registryLock.readLock().lock();
         try {
-            EntityMetadata metadata = entityMetadata.get(entityType);
+            EntityMetadata metadata = entityMetadata.getIfPresent(entityType);
             
             // HIGH PRIORITY ISSUE #7: Verify consistency between maps
             if (metadata != null) {
-                Schema schema = entitySchemas.get(entityType);
+                Schema schema = entitySchemas.getIfPresent(entityType);
                 if (schema == null) {
                     log.error("Inconsistency detected: metadata exists but schema missing for entity type: {}", entityType);
                     // Attempt to repair inconsistency
@@ -110,14 +150,14 @@ public class EntityMetadataRegistry {
      * Gets entity schema by type
      */
     public Optional<Schema> getEntitySchema(String entityType) {
-        return Optional.ofNullable(entitySchemas.get(entityType));
+        return Optional.ofNullable(entitySchemas.getIfPresent(entityType));
     }
     
     /**
      * Checks if entity type is registered
      */
     public boolean isEntityRegistered(String entityType) {
-        return entityMetadata.containsKey(entityType);
+        return entityMetadata.getIfPresent(entityType) != null;
     }
     
     /**
@@ -129,7 +169,7 @@ public class EntityMetadataRegistry {
         
         registryLock.writeLock().lock();
         try {
-            EntityMetadata existing = entityMetadata.get(entityType);
+            EntityMetadata existing = entityMetadata.getIfPresent(entityType);
             if (existing == null) {
                 throw new IllegalArgumentException("Entity type not registered: " + entityType);
             }
@@ -176,7 +216,7 @@ public class EntityMetadataRegistry {
         
         registryLock.writeLock().lock();
         try {
-            EntityMetadata existing = entityMetadata.get(entityType);
+            EntityMetadata existing = entityMetadata.getIfPresent(entityType);
             if (existing != null) {
                 if (!existing.isActive()) {
                     log.debug("Entity type {} is already deactivated", entityType);
@@ -211,14 +251,14 @@ public class EntityMetadataRegistry {
      * Gets all registered entity types
      */
     public List<String> getRegisteredEntityTypes() {
-        return new ArrayList<>(entityMetadata.keySet());
+        return new ArrayList<>(entityMetadata.asMap().keySet());
     }
     
     /**
      * Gets all active entity types
      */
     public List<String> getActiveEntityTypes() {
-        return entityMetadata.values().stream()
+        return entityMetadata.asMap().values().stream()
             .filter(EntityMetadata::isActive)
             .map(EntityMetadata::getEntityType)
             .toList();
@@ -230,7 +270,7 @@ public class EntityMetadataRegistry {
     public Map<String, Object> getRegistryStats() {
         registryLock.readLock().lock();
         try {
-            long activeCount = entityMetadata.values().stream()
+            long activeCount = entityMetadata.asMap().values().stream()
                 .filter(EntityMetadata::isActive)
                 .count();
             
@@ -239,10 +279,10 @@ public class EntityMetadataRegistry {
             long orphanedSchemas = 0;
             
             // Count inconsistencies
-            for (Map.Entry<String, EntityMetadata> entry : entityMetadata.entrySet()) {
+            for (Map.Entry<String, EntityMetadata> entry : entityMetadata.asMap().entrySet()) {
                 String entityType = entry.getKey();
                 EntityMetadata metadata = entry.getValue();
-                Schema schema = entitySchemas.get(entityType);
+                Schema schema = entitySchemas.getIfPresent(entityType);
                 
                 if (schema == null || !isSchemaSame(metadata.getSchema(), schema)) {
                     inconsistentCount++;
@@ -250,24 +290,32 @@ public class EntityMetadataRegistry {
             }
             
             // Count orphaned schemas
-            for (String entityType : entitySchemas.keySet()) {
-                if (!entityMetadata.containsKey(entityType)) {
+            for (String entityType : entitySchemas.asMap().keySet()) {
+                if (entityMetadata.getIfPresent(entityType) == null) {
                     orphanedSchemas++;
                 }
             }
             
             Map<String, Object> stats = new HashMap<>();
-            stats.put("total_registered", entityMetadata.size());
+            stats.put("total_registered", entityMetadata.estimatedSize());
             stats.put("active_entities", activeCount);
-            stats.put("inactive_entities", entityMetadata.size() - activeCount);
+            stats.put("inactive_entities", entityMetadata.estimatedSize() - activeCount);
             stats.put("entity_types", getRegisteredEntityTypes());
             
             // HIGH PRIORITY ISSUE #7: Consistency metrics
             stats.put("metadata_schema_consistent", inconsistentCount == 0);
             stats.put("inconsistent_entities", inconsistentCount);
             stats.put("orphaned_schemas", orphanedSchemas);
-            stats.put("total_schemas", entitySchemas.size());
+            stats.put("total_schemas", entitySchemas.estimatedSize());
             stats.put("registry_health_score", calculateHealthScore(inconsistentCount, orphanedSchemas));
+            
+            // Cache statistics for monitoring memory usage and performance
+            var metadataStats = entityMetadata.stats();
+            var schemaStats = entitySchemas.stats();
+            stats.put("metadata_cache_hit_rate", metadataStats.hitRate());
+            stats.put("metadata_cache_eviction_count", metadataStats.evictionCount());
+            stats.put("schema_cache_hit_rate", schemaStats.hitRate());
+            stats.put("schema_cache_eviction_count", schemaStats.evictionCount());
             
             return stats;
         } finally {
@@ -279,12 +327,12 @@ public class EntityMetadataRegistry {
      * Calculates registry health score (HIGH PRIORITY ISSUE #7)
      */
     private double calculateHealthScore(long inconsistentCount, long orphanedSchemas) {
-        if (entityMetadata.isEmpty()) {
+        if (entityMetadata.estimatedSize() == 0) {
             return 1.0; // Perfect score for empty registry
         }
         
         long totalIssues = inconsistentCount + orphanedSchemas;
-        long totalEntities = entityMetadata.size();
+        long totalEntities = entityMetadata.estimatedSize();
         
         if (totalIssues == 0) {
             return 1.0; // Perfect health
@@ -298,8 +346,8 @@ public class EntityMetadataRegistry {
      * Clears all registered entities (for testing)
      */
     public void clearAll() {
-        entityMetadata.clear();
-        entitySchemas.clear();
+        entityMetadata.invalidateAll();
+        entitySchemas.invalidateAll();
         log.info("Cleared all registered entities");
     }
     
@@ -435,10 +483,10 @@ public class EntityMetadataRegistry {
             int repairedCount = 0;
             
             // Check that every metadata entry has a corresponding schema entry
-            for (Map.Entry<String, EntityMetadata> entry : entityMetadata.entrySet()) {
+            for (Map.Entry<String, EntityMetadata> entry : entityMetadata.asMap().entrySet()) {
                 String entityType = entry.getKey();
                 EntityMetadata metadata = entry.getValue();
-                Schema schema = entitySchemas.get(entityType);
+                Schema schema = entitySchemas.getIfPresent(entityType);
                 
                 if (schema == null) {
                     inconsistencies.add("Missing schema for entity type: " + entityType);
@@ -456,12 +504,12 @@ public class EntityMetadataRegistry {
             }
             
             // Check for orphaned schemas (schemas without metadata)
-            for (String entityType : entitySchemas.keySet()) {
-                if (!entityMetadata.containsKey(entityType)) {
+            for (String entityType : entitySchemas.asMap().keySet()) {
+                if (entityMetadata.getIfPresent(entityType) == null) {
                     inconsistencies.add("Orphaned schema for entity type: " + entityType);
                     // Repair: Remove orphaned schema
-                    entitySchemas.remove(entityType);
-                    schemaRegistrationTimes.remove(entityType);
+                    entitySchemas.invalidate(entityType);
+                    schemaRegistrationTimes.invalidate(entityType);
                     repairedCount++;
                     log.warn("Removed orphaned schema for entity type: {}", entityType);
                 }

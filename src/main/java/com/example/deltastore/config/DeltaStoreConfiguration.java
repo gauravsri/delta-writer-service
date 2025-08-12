@@ -29,6 +29,9 @@ public class DeltaStoreConfiguration {
     // Schema Configuration
     private SchemaConfig schema = new SchemaConfig();
     
+    // Entity Registry Configuration
+    private Entity entity = new Entity();
+    
     // Storage Configuration  
     private Storage storage = new Storage();
     
@@ -95,6 +98,14 @@ public class DeltaStoreConfiguration {
         private PartitionStrategy partitionStrategy;
         private boolean enableOptimization = true;
         private long optimizationIntervalMs = 3600000; // 1 hour
+    }
+    
+    @Data
+    public static class Entity {
+        private long entityCacheTtlMs = 1800000;  // 30 minutes TTL for entity metadata
+        private int maxEntityRegistrations = 1000; // Maximum number of registered entities
+        private long evictionCheckIntervalMs = 300000; // 5 minutes between eviction checks
+        private boolean enableMetrics = true; // Enable cache metrics
     }
     
     // Enums for type safety
